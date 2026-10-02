@@ -6,7 +6,8 @@ CRAB turns a video file into an animated desktop wallpaper. It plays the video
 in a loop underneath every window and underneath the desktop icons, so the
 desktop stays fully usable while the wallpaper runs.
 
-Built for Pop!_OS and other GNOME-based Linux distributions.
+Written for Pop!_OS and other GNOME-based Linux distributions running the X11
+session.
 
 ---
 
@@ -49,7 +50,23 @@ Check your session type:
 echo $XDG_SESSION_TYPE
 ```
 
-The output must be `x11`.
+The output must be `x11`. On Pop!_OS 22.04, X11 is the default session. On newer
+distributions that default to Wayland, pick the X11 option on the login screen
+before starting CRAB.
+
+## Supported systems
+
+CRAB is developed and tested on Pop!_OS 22.04 with GNOME 42 and X11.
+
+It also works on other Linux distributions that meet the requirements above,
+provided they use X11 with a GNOME or Mutter based session:
+
+- Pop!_OS 22.04 LTS or newer, X11 session
+- Ubuntu, Debian, Fedora and openSUSE on GNOME, X11 session
+- Any X11 desktop with `python3-gi`, `python3-xlib` and `mpv` installed
+
+The window stacking relies on the X11 window manager, so on non-GNOME desktops
+the wallpaper may not stay behind the desktop icons.
 
 ## Installation
 
@@ -72,14 +89,16 @@ The GNOME extension `ubuntu-appindicators@ubuntu.com` must be enabled.
 
 ## Usage
 
+The interface is in Polish. The four steps below are:
+
 1. **Wybierz wideo** — pick a video file from disk.
 2. **Ustaw jako tapetę** — the video starts looping as your desktop wallpaper.
 3. **Zatrzymaj** — stops playback and restores the regular desktop background.
 4. **FPS slider** — lower values reduce CPU usage and battery drain.
 
 Closing the main window with the **X** button hides the window only. The
-wallpaper and the application keep running. Use **Zakończ aplikację** to stop
-the wallpaper and quit the program.
+wallpaper and the application keep running. Use **Zakończ aplikację** in the
+notification area menu to stop the wallpaper and quit the program.
 
 ### Configuration
 
@@ -138,7 +157,9 @@ possible.
 - No separate wallpaper per monitor, no playlists and no scheduled or
   time-based switching.
 - The preview image is taken from the first frame of the video.
-- The interface is available in Polish only.
+- The interface is available in Polish only. The documentation is in English.
+- No pause, no volume control and no video filters are exposed; playback
+  itself is silent by design.
 - Version 0.2.0 is a beta. Behaviour may change before a 1.0 release.
 
 ## Troubleshooting
@@ -163,7 +184,8 @@ Switch the filter to "Wszystkie pliki".
 
 ## Development
 
-The project is a single Python file with no third-party Python packages.
+The project is a single Python file with no third-party Python packages. It
+uses only the standard library plus the system GTK and mpv bindings.
 
 ```bash
 python3 main.py                   # run
