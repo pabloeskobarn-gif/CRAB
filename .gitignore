@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Lokalne ustawienia i dane użytkownika (nigdy nie commitować)
+config.json
+*.local
+*.secret
+*.key
+*.pem
+.env
+.env.*
+*.env
+
+# Logi i pliki tymczasowe
+*.log
+*.tmp
+*.bak
+*.orig
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Zrzuty ekranu i podglądy wygenerowane lokalnie
+podglad-*.png
+podgląd-*.png
+screenshot-*.png
+
+# Katalog roboczy aplikacji
+cache/
+.previews/

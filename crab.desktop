@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=CRAB
+GenericName=Animowana tapeta pulpitu
+Comment=CRAB — Custom Responsive Animated Backgrounds (MP4/WebM w pętli)
+Exec=python3 CRAB_PATH/main.py
+Icon=CRAB_PATH/Crab.logo.png
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
