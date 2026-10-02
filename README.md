@@ -2,142 +2,192 @@
 
 **Custom Responsive Animated Backgrounds**
 
-CRAB ustawia plik wideo jako animowaną tapetę pulpitu na Linuxie.
-Działa w tle — po zamknięciu okna tapeta gra dalej, a program sterowana jest
-z ikony w obszarze powiadomień.
+CRAB turns a video file into an animated desktop wallpaper. It plays the video
+in a loop underneath every window and underneath the desktop icons, so the
+desktop stays fully usable while the wallpaper runs.
 
-Rozwój programu Mini Wallpaper. Silnik odtwarzania tapety został przeniesiony
-z poprzedniej wersji bez zmian.
+Built for Pop!_OS and other GNOME-based Linux distributions.
+
+---
 
 ## Features
 
-- Animowana tapeta pulpitu z pliku wideo (MP4, WebM, MKV, MOV, AVI),
-  odtwarzana w pętli.
-- Odtwarzanie pod wszystkimi oknami i pod ikonami pulpitu.
-- Pełna przezroczystość dla myszy i klawiatury — ikony pulpitu są widoczne,
-  klikalne, zaznaczalne, a przeciąganie plików działa normalnie.
-- Praca w tle: przycisk „X” zamyka tylko okno, tapeta gra dalej.
-- Ikona w obszarze powiadomień z menu: otwórz okno, zatrzymaj tapetę,
-  wznów tapetę, zakończ aplikację.
-- Suwak FPS (15–60) ograniczający liczbę renderowanych klatek.
-- Podgląd wideo w aplikacji przed ustawieniem tapety.
-- Lista ostatnio używanych plików.
-- Ciemny interfejs z panelem bocznym i nawigacją.
-- Zapamiętywanie ostatniego pliku, FPS i listy ostatnich.
+- **Animated video wallpaper** — plays MP4, WebM, MKV, MOV and AVI files in an
+  endless loop.
+- **Sits behind everything** — the wallpaper window is placed below all normal
+  windows and below the desktop icon layer.
+- **Fully transparent to input** — mouse and keyboard events pass straight
+  through to the desktop. Icons stay visible, clickable and selectable, and
+  drag and drop works normally.
+- **Runs in the background** — closing the window keeps the wallpaper playing.
+  Reopen the window from the notification area icon, or start the program again.
+- **Notification area icon** with a menu to open the window, stop the
+  wallpaper, resume it, or quit the application.
+- **Frame rate control** — an FPS slider from 15 to 60 limits how many frames
+  are rendered per second.
+- **In-app preview** — a thumbnail of the selected video before you apply it.
+- **Recently used list** — switch between recent wallpaper files with one click.
+- **Persistent settings** — the last file, the FPS value and the recent list
+  are restored on the next start.
+- **Single instance** — launching the program twice shows the existing window
+  instead of starting a second copy.
 
 ## Requirements
 
-- Linux z sesją **X11**. Domyślnie na Pop!_OS 22.04 i większości dystrybucji
-  GNOME.
-- `mpv` — `sudo apt install mpv`
-- `python3` (3.8+)
-- `python3-gi` oraz `GObject Introspection` dla GTK 3
-- `python3-xlib` — do obsługi X Shape i kolejności okien
-- `gir1.2-ayatanaappindicator3-0.1` — opcjonalnie, dla ikony w obszarze
-  powiadomień
+| Component | Notes |
+|---|---|
+| Linux with **X11** | Default on Pop!_OS 22.04; GNOME 42 uses Mutter |
+| `mpv` | `sudo apt install mpv` |
+| `python3` | 3.8 or newer |
+| `python3-gi` | GTK 3 bindings, preinstalled on most desktops |
+| `python3-xlib` | Required for window input and stacking control |
+| `gir1.2-ayatanaappindicator3-0.1` | Optional, for the notification area icon |
 
-Sprawdź sesję: `echo $XDG_SESSION_TYPE` — musi być `x11`.
+Check your session type:
+
+```bash
+echo $XDG_SESSION_TYPE
+```
+
+The output must be `x11`.
 
 ## Installation
 
-Sklonuj repozytorium i uruchom program:
-
 ```bash
-git clone https://github.com/TWOJ-UZYTKOWNIK/CRAB.git
+git clone https://github.com/pabloeskobarn-gif/CRAB.git
 cd CRAB
 python3 main.py
 ```
 
-Program nie wymaga instalacji ani uprawnień roota.
+CRAB runs straight from the source tree. No build step and no root access
+required.
 
-### Ikona w obszarze powiadomień
+### Notification area icon
 
 ```bash
 sudo apt install gir1.2-ayatanaappindicator3-0.1
 ```
 
-Rozszerzenie `ubuntu-appindicators@ubuntu.com` musi być włączone w GNOME.
+The GNOME extension `ubuntu-appindicators@ubuntu.com` must be enabled.
 
-### Autostart
+## Usage
 
-Skopiuj `crab.desktop` do katalogu autostartu i podmień `CRAB_PATH`
-na bezwzględną ścieżkę do sklonowanego repozytorium:
+1. **Wybierz wideo** — pick a video file from disk.
+2. **Ustaw jako tapetę** — the video starts looping as your desktop wallpaper.
+3. **Zatrzymaj** — stops playback and restores the regular desktop background.
+4. **FPS slider** — lower values reduce CPU usage and battery drain.
+
+Closing the main window with the **X** button hides the window only. The
+wallpaper and the application keep running. Use **Zakończ aplikację** to stop
+the wallpaper and quit the program.
+
+### Configuration
+
+Settings are stored in `~/.config/crab/config.json`:
+
+```json
+{
+  "video": "/path/to/wallpaper.mp4",
+  "fps": 30,
+  "recent": ["/path/to/previous/wallpaper.mp4"]
+}
+```
+
+### Start on login
 
 ```bash
 mkdir -p ~/.config/autostart
 cp crab.desktop ~/.config/autostart/
-```
-
-```bash
 sed -i "s|CRAB_PATH|$PWD|g" ~/.config/autostart/crab.desktop
 ```
 
-## Usage
+## How it works
 
-1. **Wybierz wideo** — wskaż plik z dysku (MP4, WebM, MKV, MOV, AVI).
-2. **Ustaw jako tapetę** — wideo zaczyna grać w pętli jako tapeta.
-3. **Suwak FPS** — mniej klatek na sekundę oznacza mniejsze obciążenie
-   procesora i baterii.
-4. **Zatrzymaj** — kończy odtwarzanie i przywraca statyczną tapetę systemu.
+The wallpaper is a full-screen window created by the application, not a desktop
+background set through the desktop environment. This is what makes a video
+possible.
 
-Zamknięcie okna przyciskiem **X** zamyka **tylko okno**. Tapeta i program
-działają dalej w tle. Okno wracasz klikając ikonę w obszarze powiadomień
-albo uruchamiając `python3 main.py` ponownie — druga instancja prosi pierwszą
-o pokazanie okna.
-
-Cały program zatrzymuje pozycja **Zakończ aplikację** w panelu bocznym
-albo w menu ikony w obszarze powiadomień.
-
-### Ustawienia
-
-Program zapisuje ustawienia w `~/.config/crab/config.json`:
-
-```json
-{
-  "video": "/ścieżka/do/pliku.mp4",
-  "fps": 30,
-  "recent": ["/ścieżka/do/ostatnich/plikow.mp4"]
-}
-```
+- The window uses the `_NET_WM_WINDOW_TYPE_DESKTOP` type together with the
+  `BELOW` and `STICKY` states, so the window manager keeps it underneath every
+  other window and across all workspaces.
+- The video is rendered by **mpv**, which attaches its output to a `GtkSocket`
+  embedded in that window. Playback loops, sound and the on-screen display are
+  disabled, and mpv never captures keyboard input.
+- **Decoding is software based** (`--hwdec=no`). Hardware decoding through
+  VAAPI produced colour banding on some AMD GPUs; software decoding is
+  predictable, and the GPU is used only for scaling and presenting frames.
+- An **empty input region** is applied to the whole window tree with the X11
+  Shape extension, which is what allows clicks and drags to reach the desktop
+  underneath.
+- The wallpaper window is additionally placed directly **below the desktop
+  icon layer**, giving the stacking order: applications, desktop icons,
+  wallpaper, background.
+- The FPS slider maps to an mpv frame rate filter, so the slider value is the
+  exact number of frames rendered per second.
 
 ## Known limitations
 
-- **Wymagane X11.** Klient Wayland nie może umieścić okna pod ikonami
-  pulpitu ani na całym ekranie — potrzebna byłaby wtyczka warstwowa
-  (wlr-layer-shell), której GNOME ani COSMIC nie wspierają. Na Waylandzie
-  program pokazuje ostrzeżenie zamiast udawać, że działa.
-- Brak tapet HTML/WebGL, integracji ze Steam Workshop i z Wallpaper Engine.
-- Brak kont, sklepu, aktualizacji i wtyczek.
-- Miniatura podglądu powstaje z pierwszej klatki pliku.
-- Interfejs jest dostępny tylko w języku polskim.
-- Program jest w wersji beta — przed pierwszą wersją 1.0 mogą się zdarzyć
-  zmiany w działaniu.
+- **X11 only.** A Wayland client cannot place a window behind the desktop
+  icons or across the whole screen. That would require a layer-shell protocol
+  which neither GNOME nor COSMIC supports. On Wayland the program shows a
+  warning instead of pretending to work. Select the X11 session at the login
+  screen if your distribution defaults to Wayland.
+- No HTML or WebGL wallpapers.
+- No Steam Workshop integration and no compatibility with the Wallpaper Engine
+  application.
+- No separate wallpaper per monitor, no playlists and no scheduled or
+  time-based switching.
+- The preview image is taken from the first frame of the video.
+- The interface is available in Polish only.
+- Version 0.2.0 is a beta. Behaviour may change before a 1.0 release.
+
+## Troubleshooting
+
+**"Brak programu mpv"**
+Install mpv with `sudo apt install mpv`.
+
+**The wallpaper is not behind windows**
+The session is most likely running Wayland. Check with
+`echo $XDG_SESSION_TYPE` and log in to X11.
+
+**The file does not play**
+mpv handles MP4 and WebM on its own. Unusual codecs may require
+`sudo apt install libavcodec-extra`.
+
+**No icon in the notification area**
+Install `gir1.2-ayatanaappindicator3-0.1` and enable the
+`ubuntu-appindicators@ubuntu.com` extension.
+
+**The file browser does not show the video**
+Switch the filter to "Wszystkie pliki".
 
 ## Development
 
-Projekt to jeden plik `main.py` bez zależności od pakietów spoza systemu.
+The project is a single Python file with no third-party Python packages.
 
 ```bash
-# uruchomienie
-python3 main.py
-
-# sprawdzenie składni
-python3 -m py_compile main.py
+python3 main.py                   # run
+python3 -m py_compile main.py     # syntax check
 ```
 
-Kod jest podzielony warstwami wewnątrz `main.py`:
+The code is organised in layers inside `main.py`:
 
-- **silnik tapety** — klasa `WallpaperWindow` (okno pulpitu, gniazdo `GtkSocket`,
-  przezroczystość X Shape) oraz metody `App._start`, `App._stop`,
-  `App._stack_below_desktop_icons`, `App._ensure_layer`,
-  `App._find_desktop_icons_window`,
-- **logika** — klasa `App` (stan, konfiguracja, akcje, ikona w obszarze
-  powiadomień),
-- **interfejs** — `App._build_ui` i metody `App._build_*` (okno CRAB, motyw
-  w `CSS`, podgląd, lista ostatnich).
+- **Wallpaper engine** — the `WallpaperWindow` class (desktop window, socket,
+  input region) together with `App._start`, `App._stop`,
+  `App._stack_below_desktop_icons`, `App._ensure_layer` and
+  `App._find_desktop_icons_window`.
+- **Application logic** — the `App` class (state, configuration, actions,
+  notification area icon).
+- **User interface** — `App._build_ui` and the `App._build_*` methods (window,
+  theme in `CSS`, preview, recent list).
 
-Dzięki temu zmiany w interfejsie nie dotykają silnika odtwarzania.
+Keeping the interface in its own layer means changes to the look of the program
+never touch the wallpaper engine.
+
+## Author
+
+CRAB is developed by [pabloeskobarn-gif](https://github.com/pabloeskobarn-gif).
 
 ## License
 
-MIT — zobacz [LICENSE](LICENSE).
+Released under the MIT License. See [LICENSE](LICENSE).
