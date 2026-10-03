@@ -4,7 +4,42 @@ Wszystkie istotne zmiany w tym projekcie są opisywane w tym pliku.
 Format oparty o [Keep a Changelog](https://keepachangelog.com/pl/1.1.0/),
 wersjonowanie zgodne z [Semantic Versioning](https://semver.org/lang/pl/).
 
-## [0.2.0] — bieżąca
+Ten plik jest źródłem prawdy dla sekcji „Historia aktualizacji” w aplikacji.
+CRAB czyta GitHub Releases, a przy braku połączenia z siecią lub gdy repozytorium
+nie zawiera jeszcze wydań — ten plik.
+
+## [0.3.0] — 2026-10-03
+
+Język interfejsu, sprawdzanie aktualizacji i historia wydań. Silnik tapety
+niezmieniony.
+
+### Dodane
+
+- System tłumaczeń w katalogu `locales/` (pliki JSON, po jednym na język);
+  nowy język = nowy plik, bez zmian w kodzie aplikacji.
+- Wybór języka interfejsu w Ustawieniach: Polski i English. Zmiana działa
+  natychmiast, bez restartu aplikacji, i jest zapisywana w `config.json`.
+- Automatyczne wykrywanie języka systemu przy pierwszym uruchomieniu
+  (polski system → Polski, pozostałe → English).
+- Sprawdzanie aktualizacji w tle przez GitHub Releases API.
+- Sekcja „Aktualizacje” w Ustawieniach: przycisk „Sprawdź aktualizacje”,
+  aktualna wersja, informacja o dostępnej nowszej wersji.
+- Strona „Historia aktualizacji” z listą wydań od najnowszego do najstarszego.
+- Historia wydań czytana z GitHub Releases, z lokalnego `CHANGELOG.md`
+  jako źródłem zapasowym oraz z cache w `~/.cache/crab/releases.json`.
+- Komunikat „CRAB został zaktualizowany do wersji X.X.X” po podmianie plików
+  oraz okno „Co nowego?” z listą zmian danej wersji.
+- Menu tray i wszystkie etykiety przetłumaczone na wybrany język.
+
+### Bez zmian
+
+- Silnik tapety: okno typu `_NET_WM_WINDOW_TYPE_DESKTOP`, odtwarzanie przez
+  mpv w `GtkSocket`, dekodowanie programowe, pętla, filtr FPS, przezroczystość
+  dla wejścia oraz umieszczenie pod oknem ikon pulpitu.
+- CRAB nie pobiera ani nie uruchamia kodu z sieci. Aktualizacje są
+  instalowane ręcznie; program jedynie informuje o ich dostępności.
+
+## [0.2.0] — 2026-10-02
 
 Nowy interfejs i branding. Silnik tapety przeniesiony z Mini Wallpaper
 bez zmian.
@@ -40,7 +75,7 @@ Silnik tapety działa tak samo jak w Mini Wallpaper: okno typu
 `GtkSocket`, dekodowanie programowe, pętla, filtr FPS, przezroczystość
 dla myszy (X Shape) oraz umieszczenie pod oknem ikon pulpitu.
 
-## [0.1.0] — Mini Wallpaper BETA
+## [0.1.0] — 2026-09-28
 
 Pierwsza działająca wersja, wydana jako Mini Wallpaper.
 

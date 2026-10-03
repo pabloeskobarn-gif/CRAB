@@ -30,12 +30,16 @@ Wymagania: sesja X11 (Pop!_OS 22.04 domyślnie), mpv, python3-gi (GTK 3).
 
 import hashlib
 import json
+import locale
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import threading
+import urllib.error
+import urllib.request
 
 import gi
 
@@ -59,7 +63,7 @@ except ImportError:
 APP_ID = "crab"
 APP_TITLE = "CRAB"
 APP_SUBTITLE = "Custom Responsive Animated Backgrounds"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 APP_WINDOW_TITLE = "CRAB"
 
 CONFIG_DIR = os.path.join(GLib.get_user_config_dir(), "crab")
@@ -74,6 +78,25 @@ PREVIEW_DIR = os.path.join(CACHE_DIR, "previews")
 # logo CRAB (jeden plik dostarczony przez autorów — nigdy nie generujemy)
 LOGO_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "Crab.logo.png")
+
+# ----------------------------------------------------------------- tłumaczenia
+# Katalog z plikami locales/<kod>.json. Nowy język = nowy plik JSON,
+# bez zmian w kodzie aplikacji.
+LOCALES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "locales")
+FALLBACK_LANG = "en"
+
+# ------------------------------------------------------------- aktualizacje
+# CRAB NIGDY nie pobiera i nie uruchamia kodu z sieci. Program jedynie
+# sprawdza, czy na GitHubie jest nowsze wydanie, i pokazuje jego opis.
+GITHUB_REPO = "pabloeskobarn-gif/CRAB"
+GITHUB_RELEASES_API = "https://api.github.com/repos/%s/releases" % GITHUB_REPO
+GITHUB_RELEASE_URL = "https://github.com/%s/releases" % GITHUB_REPO
+CHANGELOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "CHANGELOG.md")
+RELEASES_CACHE_PATH = os.path.join(CACHE_DIR, "releases.json")
+UPDATE_TIMEOUT_SEC = 8
+USER_AGENT = "CRAB/%s"
 
 RECENT_MAX = 8
 
@@ -100,11 +123,256 @@ MPV_COMMON = [
 ]
 
 VIDEO_FILTERS = [
-    ("Wideo MP4", ["video/mp4"]),
-    ("Wideo WebM", ["video/webm"]),
-    ("Wideo MKV", ["video/x-matroska", "video/x-matroska-encrypted"]),
-    ("Wideo MOV/AVI", ["video/quicktime", "video/x-msvideo"]),
+    ("filter.mp4", ["video/mp4"]),
+    ("filter.webm", ["video/webm"]),
+    ("filter.mkv", ["video/x-matroska", "video/x-matroska-encrypted"]),
+    ("filter.mov_avi", ["video/quicktime", "video/x-msvideo"]),
 ]
+
+# -------------------------------------------------------------------- i18n
+
+_translations = {}
+_current_lang = FALLBACK_LANG
+
+
+def available_languages():
+    """Kody języków obecne w katalogu locales/ (bez plików tymczasowych)."""
+    codes = []
+    try:
+        for name in sorted(os.listdir(LOCALES_DIR)):
+            if name.endswith(".json") and len(name) > 5:
+                codes.append(name[:-5])
+    except OSError:
+        pass
+    return codes or [FALLBACK_LANG]
+
+
+def language_display_name(code):
+    """Nazwa języka w jego własnym zapisie („Polski”, „English”)."""
+    data = _load_locale_file(code)
+    meta = data.get("meta") or {}
+    return meta.get("native_name") or meta.get("name") or code
+
+
+def detect_system_language():
+    """Polski dla polskiego systemu, w pozostałych przypadkach angielski."""
+    codes = []
+    for getter in ("getlocale", "getdefaultlocale"):
+        try:
+            value = getattr(locale, getter)()
+        except (AttributeError, ValueError):
+            value = None
+        if isinstance(value, (tuple, list)) and value:
+            codes.append(str(value[0]))
+        elif isinstance(value, str) and value:
+            codes.append(value)
+    for var in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        value = os.environ.get(var, "")
+        if value and value not in ("C", "POSIX"):
+            codes.append(value.split(".")[0].split("@")[0])
+    supported = available_languages()
+    for code in codes:
+        code = code.split("_")[0].split("-")[0].lower()
+        if code in supported:
+            return code
+    return FALLBACK_LANG
+
+
+def _load_locale_file(code):
+    path = os.path.join(LOCALES_DIR, "%s.json" % code)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def set_language(code):
+    """Ustawia aktywny język. Zwraca True, gdy język faktycznie się zmienił."""
+    global _current_lang, _translations
+    if code not in available_languages():
+        code = FALLBACK_LANG
+    if code == _current_lang and _translations:
+        return False
+    _translations = _load_locale_file(code)
+    if not _translations:
+        code = FALLBACK_LANG
+        _translations = _load_locale_file(code)
+    _current_lang = code
+    return True
+
+
+def current_language():
+    return _current_lang
+
+
+def t(key, *args):
+    """Tekst interfejsu dla klucza; brak klucza = sam klucz (łatwe szukanie)."""
+    text = _translations.get(key)
+    if not isinstance(text, str):
+        text = _load_locale_file(FALLBACK_LANG).get(key)
+    if not isinstance(text, str):
+        return key
+    return text % args if args else text
+
+
+# --------------------------------------------------------------- wersje
+
+def parse_version(value):
+    """„v0.3.1” -> (0, 3, 1). Zwraca None dla wersji nieczytelnych."""
+    if not isinstance(value, str):
+        return None
+    match = re.match(r"^\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?", value)
+    if not match:
+        return None
+    return tuple(int(part) if part else 0 for part in match.groups())
+
+
+def is_newer_version(candidate, current=APP_VERSION):
+    """True, gdy candidate jest nowsze od current."""
+    left = parse_version(candidate)
+    right = parse_version(current)
+    if left is None or right is None:
+        return False
+    return left > right
+
+
+# --------------------------------------------------- historia / changelog
+
+def _entries_from_changelog_text(text):
+    """Parsuje CHANGELOG.md w stylu Keep a Changelog.
+
+    Nagłówek ## [0.3.0] i data w linii, po nim punkty listy (## Dodane
+    / ### Zmienione traktowane jest jako grupa, a ich elementy jako
+    pojedyncze zmiany).
+    """
+    entries = []
+    current = None
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        header = re.match(r"^#{2,3}\s*\[?v?(\d+\.\d+(?:\.\d+)?)\]?", line)
+        if header and len(line.split()) <= 4:
+            if current:
+                entries.append(current)
+            # data bywa w tym samym wierszu co nagłówek
+            inline = re.search(r"(\d{4}-\d{2}-\d{2})", line)
+            current = {"version": header.group(1),
+                       "date": inline.group(1) if inline else "",
+                       "changes": []}
+            continue
+        if current is None:
+            continue
+        date = re.search(r"(\d{4}-\d{2}-\d{2})", line)
+        if date and not current["date"]:
+            current["date"] = date.group(1)
+            continue
+        item = re.match(r"^[-*]\s+(.*\S)\s*$", line)
+        if item:
+            text_item = item.group(1)
+            if text_item.startswith("#"):
+                continue
+            current["changes"].append(text_item)
+    if current:
+        entries.append(current)
+    return [e for e in entries if e["changes"]]
+
+
+def load_changelog_entries():
+    """Historia z lokalnego CHANGELOG.md (zapasowe źródło)."""
+    try:
+        with open(CHANGELOG_PATH, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return []
+    return _entries_from_changelog_text(text)
+
+
+def _entries_from_github(releases):
+    """Zamienia odpowiedź GitHub Releases na listę wpisów historii."""
+    entries = []
+    for item in releases if isinstance(releases, list) else []:
+        if not isinstance(item, dict):
+            continue
+        tag = item.get("tag_name") or item.get("name") or ""
+        if not parse_version(tag):
+            continue
+        body = item.get("body") or ""
+        changes = []
+        for raw in body.splitlines():
+            line = re.sub(r"^[-*]\s+", "", raw.strip())
+            line = re.sub(r"^#{1,6}\s*", "", line).strip()
+            if line:
+                changes.append(line)
+        if not changes:
+            changes = [item.get("name") or tag]
+        entries.append({
+            "version": parse_version(tag) and tag.lstrip("v") or tag,
+            "date": (item.get("published_at") or "")[:10],
+            "changes": changes,
+            "url": item.get("html_url") or "",
+        })
+    return entries
+
+
+def _read_cache():
+    try:
+        with open(RELEASES_CACHE_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _write_cache(data):
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        with open(RELEASES_CACHE_PATH, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def fetch_release_history():
+    """Pobiera historię wydań z GitHuba (wątek poza UI).
+
+    Zwraca (entries, error). Przy braku sieci korzysta z cache, a gdy
+    cache też nie ma — z lokalnego CHANGELOG.md.
+    """
+    request = urllib.request.Request(
+        GITHUB_RELEASES_API,
+        headers={"User-Agent": USER_AGENT % APP_VERSION,
+                 "Accept": "application/vnd.github+json"})
+    try:
+        with urllib.request.urlopen(
+                request, timeout=UPDATE_TIMEOUT_SEC) as response:
+            releases = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError,
+            ValueError, TimeoutError) as exc:
+        cached = _read_cache()
+        if cached and cached.get("entries"):
+            return cached["entries"], "cache:%s" % exc
+        entries = load_changelog_entries()
+        return entries, "changelog:%s" % exc
+    entries = _entries_from_github(releases)
+    if entries:
+        _write_cache({"entries": entries})
+        return entries, None
+    cached = _read_cache()
+    if cached and cached.get("entries"):
+        return cached["entries"], "cache:"
+    return load_changelog_entries(), "changelog:"
+
+
+def latest_release_version(entries):
+    """Najnowsza wersja na liście wpisów historii."""
+    best = None
+    for entry in entries or []:
+        parsed = parse_version(entry.get("version"))
+        if parsed and (best is None or parsed > best[0]):
+            best = (parsed, entry.get("version"))
+    return best[1] if best else None
+
 
 # --------------------------------------------------------------- wygląd CRAB
 
@@ -365,13 +633,45 @@ def load_config():
 
 
 def save_config(video, fps, recent):
+    _write_config({"video": video, "fps": fps, "recent": recent})
+
+
+def _write_config(updates):
+    """Scala podane pola z istniejącym plikiem ustawień i zapisuje.
+
+    Dzięki temu nowe opcje (np. „language”) nie giną przy zapisie tapety.
+    """
+    data = {}
+    try:
+        data = _read_config_file(CONFIG_PATH)
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError, TypeError):
+        data = {}
+    data.update(updates)
     try:
         os.makedirs(CONFIG_DIR, exist_ok=True)
         with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
-            json.dump({"video": video, "fps": fps, "recent": recent},
-                      fh, ensure_ascii=False, indent=2)
+            json.dump(data, fh, ensure_ascii=False, indent=2)
     except OSError:
         pass
+
+
+def load_language():
+    """Język z ustawień; brak — język systemu (polski → Polski)."""
+    try:
+        data = _read_config_file(CONFIG_PATH)
+    except (OSError, ValueError, TypeError):
+        data = None
+    if isinstance(data, dict):
+        code = data.get("language")
+        if isinstance(code, str) and code:
+            return code
+    return detect_system_language()
+
+
+def save_language(code):
+    _write_config({"language": code})
 
 
 # ---------------------------------------------------------------- okno tapety
@@ -464,6 +764,7 @@ class WallpaperWindow(Gtk.Window):
 
 class App:
     def __init__(self):
+        set_language(load_language())
         self.video, self.fps, self.recent = load_config()
         if self.video and not os.path.isfile(self.video):
             self.video = None
@@ -482,15 +783,51 @@ class App:
         self.nav_buttons = {}
         self.recent = list(self.recent or [])
 
+        # stan aktualizacji i historii wydań
+        self.update_entries = []
+        self.update_source = ""
+        self.available_version = None
+        self._update_busy = False
+        self._check_update_id = 0
+
         self._build_ui()
         self._setup_tray()
 
         if self._is_wayland():
-            self._status("Uwaga: sesja Wayland — tapeta wymaga X11. "
-                         "Przy logowaniu wybierz „X11”.")
+            self._status(t("status.wayland"))
         elif self.video:
             # przywróć ostatnią tapetę
             GLib.idle_add(self._start)
+
+        # historia z cache/changelogu od razu, sprawdzenie sieci w tle
+        self._load_history_async()
+
+    # --------------------------------------------------------------- i18n
+
+    def _retranslate(self):
+        """Przebudowuje interfejs po zmianie języka (bez restartu procesu).
+
+        Silnik tapety pozostaje nietknięty — przebudowywane są wyłącznie
+        widgety okna i menu tray, a stan odtwarzania przeżywa.
+        """
+        old_win = getattr(self, "win", None)
+        self._build_ui()
+        if old_win is not None:
+            old_win.destroy()
+        self.win.present()
+        self._retranslate_tray()
+        self._refresh_ui()
+        self._refresh_recent()
+        self._refresh_changelog()
+
+    def _on_language_changed(self, combo):
+        code = combo.get_active_id()
+        if not code or not set_language(code):
+            return
+        save_language(code)
+        self._retranslate()
+        self._status(t("dialog.language_changed",
+                       language_display_name(code)))
 
     # ---------------------------------------------------- interfejs (CRAB UI)
 
@@ -519,6 +856,7 @@ class App:
         self.stack.add_named(self._build_page_recent(), "recent")
         self.stack.add_named(self._build_page_settings(), "settings")
         self.stack.add_named(self._build_page_about(), "about")
+        self.stack.add_named(self._build_page_changelog(), "changelog")
         self.stack.set_visible_child_name("wallpapers")
 
         self._refresh_ui()
@@ -564,11 +902,13 @@ class App:
         nav.set_selection_mode(Gtk.SelectionMode.NONE)
         self.nav_buttons = {}
         for key, icon, text in (
-                ("wallpapers", "video-x-generic-symbolic", "Moje tapety"),
-                ("recent", "document-open-recent-symbolic",
-                 "Ostatnio używane"),
-                ("settings", "preferences-system-symbolic", "Ustawienia"),
-                ("about", "help-about-symbolic", "O programie")):
+                ("wallpapers", "video-x-generic-symbolic", "nav.wallpapers"),
+                ("recent", "document-open-recent-symbolic", "nav.recent"),
+                ("settings", "preferences-system-symbolic", "nav.settings"),
+                ("changelog", "document-view-history-symbolic",
+                 "nav.changelog"),
+                ("about", "help-about-symbolic", "nav.about")):
+            text = t(text)
             row = Gtk.ListBoxRow()
             row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
             row_box.set_margin_top(8)
@@ -597,11 +937,11 @@ class App:
         foot.set_margin_end(14)
 
         self.btn_quit = make_button(
-            "Zakończ aplikację", "application-exit-symbolic", "crab-danger",
-            self._on_quit, "Zatrzymuje tapetę i zamyka program")
+            t("sidebar.quit"), "application-exit-symbolic", "crab-danger",
+            self._on_quit, t("sidebar.quit_tooltip"))
         foot.pack_start(self.btn_quit, False, False, 0)
 
-        ver = Gtk.Label(label="Wersja %s" % APP_VERSION)
+        ver = Gtk.Label(label=t("sidebar.version", APP_VERSION))
         ver.set_name("crab-muted")
         foot.pack_start(ver, False, False, 0)
 
@@ -635,7 +975,7 @@ class App:
         page.set_margin_start(26)
         page.set_margin_end(26)
 
-        heading = Gtk.Label(label="Moje tapety", xalign=0)
+        heading = Gtk.Label(label=t("page.wallpapers.title"), xalign=0)
         heading.set_name("crab-section-title")
         page.pack_start(heading, False, False, 0)
 
@@ -654,7 +994,7 @@ class App:
         page.pack_start(preview_frame, True, True, 0)
 
         # nazwa i ścieżka pliku
-        self.file_label = Gtk.Label(label="Nie wybrano pliku wideo", xalign=0)
+        self.file_label = Gtk.Label(label=t("page.wallpapers.no_file"), xalign=0)
         self.file_label.set_name("crab-filename")
         self.file_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
         page.pack_start(self.file_label, False, False, 0)
@@ -666,18 +1006,20 @@ class App:
 
         # wybór pliku
         self.btn_choose = make_button(
-            "Wybierz wideo", "folder-open-symbolic", "crab-secondary",
-            self._on_choose, "Wybiera plik wideo z dysku")
+            t("page.wallpapers.choose"), "folder-open-symbolic",
+            "crab-secondary", self._on_choose,
+            t("page.wallpapers.choose_tooltip"))
         page.pack_start(self.btn_choose, False, False, 0)
 
         # akcje — te same metody co w wersji BETA
         actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.btn_set = make_button(
-            "Ustaw jako tapetę", "emblem-system-symbolic", "crab-primary",
-            self._on_set, "Uruchamia wideo jako animowaną tapetę pulpitu")
+            t("page.wallpapers.set"), "emblem-system-symbolic", "crab-primary",
+            self._on_set, t("page.wallpapers.set_tooltip"))
         self.btn_stop = make_button(
-            "Zatrzymaj", "media-playback-pause-symbolic", "crab-secondary",
-            self._on_stop, "Zatrzymuje odtwarzanie tapety")
+            t("page.wallpapers.stop"), "media-playback-pause-symbolic",
+            "crab-secondary", self._on_stop,
+            t("page.wallpapers.stop_tooltip"))
         actions.pack_start(self.btn_set, True, True, 0)
         actions.pack_start(self.btn_stop, True, True, 0)
         page.pack_start(actions, False, False, 0)
@@ -692,7 +1034,7 @@ class App:
         fps_card.set_border_width(16)
 
         fps_head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.fps_label = Gtk.Label(label="FPS: %d" % self.fps, xalign=0)
+        self.fps_label = Gtk.Label(label=t("page.wallpapers.fps", self.fps), xalign=0)
         fps_head.pack_start(theme_icon("preferences-system-time-symbolic", 16),
                             False, False, 0)
         fps_head.pack_start(self.fps_label, True, True, 0)
@@ -707,14 +1049,12 @@ class App:
         self.fps_scale.connect("value-changed", self._on_fps)
         fps_card.pack_start(self.fps_scale, False, False, 0)
 
-        hint = Gtk.Label(
-            label="Mniej FPS = mniejsze obciążenie procesora i baterii.",
-            xalign=0)
+        hint = Gtk.Label(label=t("page.wallpapers.fps_hint"), xalign=0)
         hint.set_name("crab-muted")
         fps_card.pack_start(hint, False, False, 0)
         page.pack_start(fps_card, False, False, 0)
 
-        self.status = Gtk.Label(label="Gotowe.", xalign=0)
+        self.status = Gtk.Label(label=t("page.wallpapers.ready"), xalign=0)
         self.status.set_name("crab-status")
         self.status.set_line_wrap(True)
         page.pack_start(self.status, False, False, 0)
@@ -732,22 +1072,20 @@ class App:
         page.set_margin_end(26)
 
         head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        heading = Gtk.Label(label="Ostatnio używane tapety", xalign=0)
+        heading = Gtk.Label(label=t("recent.title"), xalign=0)
         heading.set_name("crab-section-title")
         heading.set_hexpand(True)
         head.pack_start(heading, True, True, 0)
         btn_clear = make_button(
-            "Wyczyść listę", "edit-clear-symbolic", "crab-secondary",
-            self._on_clear_recent, "Usuwa listę ostatnich plików")
+            t("recent.clear"), "edit-clear-symbolic", "crab-secondary",
+            self._on_clear_recent, t("recent.clear_tooltip"))
         head.pack_start(btn_clear, False, False, 0)
         page.pack_start(head, False, False, 0)
 
         self.recent_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         page.pack_start(self.recent_box, True, True, 0)
 
-        self.recent_empty = Gtk.Label(
-            label="Brak zapisanych plików. Wybrane wideo pojawi się tutaj.",
-            xalign=0)
+        self.recent_empty = Gtk.Label(label=t("recent.empty"), xalign=0)
         self.recent_empty.set_name("crab-muted")
         self.recent_box.pack_start(self.recent_empty, False, False, 0)
 
@@ -761,9 +1099,7 @@ class App:
             self.recent_box.remove(child)
         items = [p for p in (self.recent or []) if os.path.isfile(p)]
         if not items:
-            self.recent_empty = Gtk.Label(
-                label="Brak zapisanych plików. Wybrane wideo pojawi się tutaj.",
-                xalign=0)
+            self.recent_empty = Gtk.Label(label=t("recent.empty"), xalign=0)
             self.recent_empty.set_name("crab-muted")
             self.recent_box.pack_start(self.recent_empty, False, False, 0)
             self.recent_box.show_all()
@@ -796,17 +1132,18 @@ class App:
         active = (path == self.playing_video)
         row.pack_start(
             make_button(
-                "Ustaw" if not active else "Aktywna",
-                "emblem-system-symbolic" if not active else "object-select-symbolic",
-                "crab-secondary" if not active else "crab-primary",
+                t("recent.active") if active else t("recent.use"),
+                "object-select-symbolic" if active
+                else "emblem-system-symbolic",
+                "crab-primary" if active else "crab-secondary",
                 None if active else (lambda _b, p=path: self._on_use_recent(p)),
-                "Ustawia tę tapetę na pulpicie"),
+                t("recent.use_tooltip")),
             False, False, 0)
         return row
 
     def _on_use_recent(self, path):
         if not os.path.isfile(path):
-            self._status("Nie znaleziono pliku: %s" % path)
+            self._status(t("page.wallpapers.missing", path))
             self.recent = _clean_recent(self.recent)
             save_config(self.video, self.fps, self.recent)
             self._refresh_recent()
@@ -817,7 +1154,7 @@ class App:
         save_config(self.video, self.fps, self.recent)
         self._refresh_ui()
         self._load_preview(path)
-        self._status("Ustawiono tapetę: %s" % os.path.basename(path))
+        self._status(t("page.wallpapers.set_done", os.path.basename(path)))
         self._start()
 
     def _on_clear_recent(self, _btn):
@@ -825,7 +1162,7 @@ class App:
         self.recent = [current] if current else []
         save_config(self.video, self.fps, self.recent)
         self._refresh_recent()
-        self._status("Lista ostatnich tapet wyczyszczona.")
+        self._status(t("page.wallpapers.cleared"))
 
     # ----------------------------------------------------- strona: ustawienia
 
@@ -837,7 +1174,7 @@ class App:
         page.set_margin_start(26)
         page.set_margin_end(26)
 
-        heading = Gtk.Label(label="Ustawienia", xalign=0)
+        heading = Gtk.Label(label=t("settings.title"), xalign=0)
         heading.set_name("crab-section-title")
         page.pack_start(heading, False, False, 0)
 
@@ -860,46 +1197,200 @@ class App:
 
         # suwak FPS jest też w ustawieniach — ten sam widget co na stronie tapet
         card.pack_start(
-            Gtk.Label(label="Jakość odtwarzania", xalign=0), False, False, 0)
-        hint = Gtk.Label(
-            label="Suwak FPS jest dostępny w zakładce „Moje tapety”.",
-            xalign=0)
+            Gtk.Label(label=t("settings.quality"), xalign=0), False, False, 0)
+        hint = Gtk.Label(label=t("settings.quality_hint"), xalign=0)
         hint.set_name("crab-muted")
         hint.set_line_wrap(True)
         card.pack_start(hint, False, False, 0)
 
         row, self.session_value = row_with_value(
-            "Sesja graficzna",
-            "X11" if not self._is_wayland() else "Wayland (niewspierane)")
+            t("settings.session"),
+            t("settings.session_wayland") if self._is_wayland()
+            else t("settings.session_x11"))
         card.pack_start(row, False, False, 0)
 
-        row, self.engine_value = row_with_value("Silnik odtwarzania", "mpv")
+        row, self.engine_value = row_with_value(t("settings.engine"), "mpv")
         card.pack_start(row, False, False, 0)
 
         row, self.decode_value = row_with_value(
-            "Dekodowanie", "programowe (bez VAAPI)")
+            t("settings.decode"), t("settings.decode_value"))
         card.pack_start(row, False, False, 0)
 
         row, self.config_value = row_with_value(
-            "Plik ustawień", CONFIG_PATH)
+            t("settings.config_file"), CONFIG_PATH)
         card.pack_start(row, False, False, 0)
 
         row, self.tray_value = row_with_value(
-            "Ikona w obszarze powiadomień",
-            "dostępna" if self.tray is not None else "brak (GNOME bez tray)")
+            t("settings.tray"),
+            t("settings.tray_yes") if self.tray is not None
+            else t("settings.tray_no"))
         card.pack_start(row, False, False, 0)
+
+        # ---- język interfejsu -------------------------------------------
+        card.pack_start(
+            Gtk.Label(label=t("settings.language"), xalign=0), False, False, 0)
+        self.lang_combo = Gtk.ComboBoxText()
+        for code in available_languages():
+            self.lang_combo.append(code, language_display_name(code))
+        active = current_language()
+        if active:
+            self.lang_combo.set_active_id(active)
+        self.lang_combo.set_halign(Gtk.Align.START)
+        self.lang_combo.connect("changed", self._on_language_changed)
+        card.pack_start(self.lang_combo, False, False, 0)
+        lang_hint = Gtk.Label(label=t("settings.language_hint"), xalign=0)
+        lang_hint.set_name("crab-muted")
+        lang_hint.set_line_wrap(True)
+        card.pack_start(lang_hint, False, False, 0)
+
+        # ---- aktualizacje -------------------------------------------------
+        card.pack_start(
+            Gtk.Label(label=t("updates.title"), xalign=0), False, False, 0)
+
+        card.pack_start(self._version_row(), False, False, 0)
+
+        self.update_buttons = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.btn_check = make_button(
+            t("updates.check"), "emblem-system-symbolic", "crab-secondary",
+            self._on_check_updates, t("updates.check"))
+        self.update_buttons.pack_start(self.btn_check, False, False, 0)
+        self.btn_history = make_button(
+            t("updates.open_history"), "document-view-history-symbolic",
+            "crab-secondary", self._on_open_history,
+            t("updates.open_history"))
+        self.update_buttons.pack_start(self.btn_history, False, False, 0)
+        card.pack_start(self.update_buttons, False, False, 0)
+
+        self.updates_note = Gtk.Label(label=t("settings.restart_note"), xalign=0)
+        self.updates_note.set_name("crab-muted")
+        self.updates_note.set_line_wrap(True)
+        card.pack_start(self.updates_note, False, False, 0)
 
         page.pack_start(card, False, False, 0)
 
-        note = Gtk.Label(
-            label="CRAB wymaga sesji X11 — na Waylandzie okno tapety nie może "
-                  "znaleźć się pod ikonami pulpitu.",
-            xalign=0)
+        note = Gtk.Label(label=t("settings.x11_note"), xalign=0)
         note.set_name("crab-muted")
         note.set_line_wrap(True)
         page.pack_start(note, False, False, 0)
 
         return page
+
+    def _version_row(self):
+        """Wiersz „Aktualna wersja” — używany też po zmianie stanu."""
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        lbl = Gtk.Label(label=t("updates.current", APP_VERSION), xalign=0)
+        lbl.set_size_request(190, -1)
+        lbl.set_name("crab-muted")
+        box.pack_start(lbl, False, False, 0)
+        self.current_version_value = Gtk.Label(
+            label=t("sidebar.version", APP_VERSION), xalign=0)
+        self.current_version_value.set_hexpand(True)
+        self.current_version_value.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        self.current_version_value.set_selectable(True)
+        box.pack_start(self.current_version_value, True, True, 0)
+        return box
+
+    # ------------------------------------------- strona: historia wersji
+
+    def _build_page_changelog(self):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        page.set_name("changelog")
+        page.set_margin_top(26)
+        page.set_margin_bottom(22)
+        page.set_margin_start(26)
+        page.set_margin_end(26)
+
+        head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        heading = Gtk.Label(label=t("changelog.title"), xalign=0)
+        heading.set_name("crab-section-title")
+        heading.set_hexpand(True)
+        head.pack_start(heading, True, True, 0)
+        head.pack_start(
+            make_button(t("updates.check"), "emblem-system-symbolic",
+                        "crab-secondary", self._on_check_updates,
+                        t("updates.check")),
+            False, False, 0)
+        page.pack_start(head, False, False, 0)
+
+        self.changelog_source = Gtk.Label(label=t("changelog.loading"), xalign=0)
+        self.changelog_source.set_name("crab-muted")
+        page.pack_start(self.changelog_source, False, False, 0)
+
+        self.changelog_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
+                                     spacing=12)
+        page.pack_start(self.changelog_box, True, True, 0)
+
+        return page
+
+    def _refresh_changelog(self):
+        """Buduje listę wersji: najnowsza u góry."""
+        if getattr(self, "changelog_box", None) is None:
+            return
+        for child in list(self.changelog_box.get_children()):
+            self.changelog_box.remove(child)
+
+        if not self.update_entries:
+            empty = Gtk.Label(label=t("changelog.empty"), xalign=0)
+            empty.set_name("crab-muted")
+            empty.set_line_wrap(True)
+            self.changelog_box.pack_start(empty, False, False, 0)
+
+        for entry in self.update_entries:
+            self.changelog_box.pack_start(
+                self._make_changelog_card(entry), False, False, 0)
+
+        if self.update_source:
+            self.changelog_source.set_text(
+                t("changelog.source", self.update_source))
+        else:
+            self.changelog_source.set_text("")
+        self.changelog_box.show_all()
+        self.changelog_source.show()
+
+    def _make_changelog_card(self, entry):
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        card.get_style_context().add_class("crab-card")
+        card.set_border_width(16)
+
+        version = "CRAB %s" % entry.get("version", "")
+        top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        name = Gtk.Label(label=version, xalign=0)
+        name.set_name("crab-filename")
+        top.pack_start(name, False, False, 0)
+
+        is_current = parse_version(entry.get("version")) == parse_version(
+            APP_VERSION)
+        if is_current:
+            badge = Gtk.Label(label=t("updates.current_badge"), xalign=0)
+            badge.set_name("crab-muted")
+            top.pack_start(badge, False, False, 0)
+        top.pack_start(Gtk.Box(), True, True, 0)
+        card.pack_start(top, False, False, 0)
+
+        if entry.get("date"):
+            date = Gtk.Label(label=t("changelog.release_date",
+                                     entry["date"]), xalign=0)
+            date.set_name("crab-muted")
+            card.pack_start(date, False, False, 0)
+
+        for change in entry.get("changes") or []:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            row.set_margin_start(4)
+            row.pack_start(theme_icon("object-select-symbolic", 14),
+                           False, False, 0)
+            lbl = Gtk.Label(label=change, xalign=0)
+            lbl.set_line_wrap(True)
+            lbl.set_hexpand(True)
+            row.pack_start(lbl, True, True, 0)
+            card.pack_start(row, False, False, 0)
+
+        if entry.get("url"):
+            link = Gtk.LinkButton(uri=entry["url"], label=
+                                  t("updates.release_page"))
+            link.set_halign(Gtk.Align.START)
+            card.pack_start(link, False, False, 0)
+        return card
 
     # ------------------------------------------------------- strona: o programie
 
@@ -911,7 +1402,7 @@ class App:
         page.set_margin_start(26)
         page.set_margin_end(26)
 
-        heading = Gtk.Label(label="O programie", xalign=0)
+        heading = Gtk.Label(label=t("about.title"), xalign=0)
         heading.set_name("crab-section-title")
         page.pack_start(heading, False, False, 0)
 
@@ -940,23 +1431,151 @@ class App:
         full.set_name("crab-muted")
         texts.pack_start(full, False, False, 0)
 
-        desc = Gtk.Label(
-            label="CRAB to rozwój Mini Wallpaper BETA. Silnik tapety "
-                  "(odtwarzanie wideo przez mpv w oknie pulpitu) pozostaje "
-                  "bez zmian — nowy jest interfejs i branding.",
-            xalign=0)
+        desc = Gtk.Label(label=t("about.description"), xalign=0)
         desc.set_line_wrap(True)
         desc.set_max_width_chars(56)
         desc.set_name("crab-status")
         texts.pack_start(desc, False, False, 0)
 
-        ver = Gtk.Label(label="Wersja %s" % APP_VERSION, xalign=0)
+        ver = Gtk.Label(label=t("sidebar.version", APP_VERSION), xalign=0)
         ver.set_name("crab-muted")
         texts.pack_start(ver, False, False, 0)
 
         card.pack_start(texts, True, True, 0)
         page.pack_start(card, True, True, 0)
         return page
+
+    # ------------------------------------------------------- aktualizacje
+
+    def _on_open_history(self, _btn=None):
+        """Przełącza na stronę historii i odświeża dane."""
+        if self.stack is not None:
+            self.stack.set_visible_child_name("changelog")
+        if not self.update_entries:
+            self._load_history_async()
+        self._refresh_changelog()
+
+    def _load_history_async(self):
+        """Pobiera historię wydań poza wątkiem UI."""
+        def worker():
+            entries, error = fetch_release_history()
+            GLib.idle_add(self._apply_history, entries, error)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_history(self, entries, error):
+        was_busy = self._update_busy
+        self._update_busy = False
+        self.update_entries = entries or []
+        source_key = (error or "").split(":")[0]
+        if source_key == "changelog":
+            self.update_source = t("updates.source_changelog")
+        else:
+            self.update_source = t("updates.source_github")
+
+        latest = latest_release_version(self.update_entries)
+        self.available_version = latest if is_newer_version(latest) else None
+        self._refresh_changelog()
+        self._refresh_update_ui()
+
+        # informacja o wyniku tylko przy ręcznym sprawdzeniu
+        if was_busy:
+            if source_key == "changelog" and error:
+                self._status(t("updates.offline_hint"))
+            elif self.available_version:
+                self._status(t("updates.available_msg",
+                               self.available_version))
+            elif self.update_entries:
+                self._status(t("updates.up_to_date_msg"))
+            else:
+                self._status(t("updates.error", t("updates.nothing_found")))
+        elif source_key == "changelog" and error:
+            self._status(t("updates.offline_hint"))
+        return GLib.SOURCE_REMOVE
+
+    def _on_check_updates(self, _btn=None):
+        if self._update_busy:
+            return
+        self._update_busy = True
+        if self.btn_check is not None:
+            self.btn_check.set_sensitive(False)
+        self._status(t("updates.checking_msg"))
+        self._load_history_async()
+
+    def _refresh_update_ui(self):
+        """Stan przycisków i komunikatów aktualizacji w Ustawieniach."""
+        if self._update_busy:
+            return
+        if getattr(self, "btn_check", None) is not None:
+            self.btn_check.set_sensitive(True)
+        if getattr(self, "current_version_value", None) is not None:
+            self.current_version_value.set_text(
+                t("sidebar.version", APP_VERSION))
+        if getattr(self, "updates_note", None) is not None:
+            if self.available_version:
+                self.updates_note.set_text(
+                    t("updates.available", self.available_version))
+            else:
+                self.updates_note.set_text(
+                    t("updates.up_to_date", APP_VERSION))
+
+    def _announce_update(self, version):
+        """Komunikat po aktualizacji + przycisk „Co nowego?”."""
+        entries = self.update_entries or []
+        latest = latest_release_version(entries)
+        dialog = Gtk.MessageDialog(
+            parent=self.win, modal=True,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.NONE,
+            text=t("dialog.updated_title"))
+        dialog.format_secondary_text(t("dialog.updated_text", version))
+        whats_new = dialog.add_button(t("dialog.whats_new"),
+                                      Gtk.ResponseType.ACCEPT)
+        dialog.add_button(t("dialog.close"), Gtk.ResponseType.CLOSE)
+        dialog.set_default_response(Gtk.ResponseType.CLOSE)
+        response = dialog.run()
+        if response == Gtk.ResponseType.ACCEPT:
+            whats_new.get_style_context().add_class("crab-primary")
+            self._show_whats_new(latest or version, entries)
+        dialog.destroy()
+
+    def _show_whats_new(self, version, entries=None):
+        """Okno „Co nowego” z listą zmian danej wersji."""
+        entries = entries if entries is not None else self.update_entries
+        changes = []
+        for entry in entries or []:
+            if parse_version(entry.get("version")) == parse_version(version):
+                changes = entry.get("changes") or []
+                break
+        dialog = Gtk.Dialog(
+            title=t("dialog.whats_new_title", version), parent=self.win,
+            modal=True)
+        dialog.set_default_size(560, 460)
+        dialog.add_button(t("dialog.close"), Gtk.ResponseType.CLOSE)
+        body = dialog.get_content_area()
+        body.set_spacing(10)
+        body.set_border_width(16)
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        if not changes:
+            label = Gtk.Label(label=t("updates.nothing_found"), xalign=0)
+            label.set_line_wrap(True)
+            box.pack_start(label, False, False, 0)
+        for change in changes:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            row.pack_start(theme_icon("object-select-symbolic", 14),
+                           False, False, 0)
+            lbl = Gtk.Label(label=change, xalign=0)
+            lbl.set_line_wrap(True)
+            lbl.set_hexpand(True)
+            row.pack_start(lbl, True, True, 0)
+            box.pack_start(row, False, False, 0)
+        scroller.add(box)
+        body.pack_start(scroller, True, True, 0)
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
 
     # ------------------------------------------------------------- podgląd
 
@@ -1023,7 +1642,7 @@ class App:
             self.path_label.set_text(os.path.dirname(self.video))
             self.btn_set.set_sensitive(True)
         else:
-            self.file_label.set_text("Nie wybrano pliku wideo")
+            self.file_label.set_text(t("page.wallpapers.no_file"))
             self.path_label.set_text("")
             self.btn_set.set_sensitive(False)
         playing = self.mpv is not None
@@ -1046,18 +1665,18 @@ class App:
 
     def _on_choose(self, _btn):
         dialog = Gtk.FileChooserDialog(
-            title="Wybierz plik wideo", parent=self.win,
+            title=t("dialog.choose_title"), parent=self.win,
             action=Gtk.FileChooserAction.OPEN)
-        dialog.add_buttons("_Anuluj", Gtk.ResponseType.CANCEL,
-                           "_Otwórz", Gtk.ResponseType.OK)
+        dialog.add_buttons(t("dialog.cancel"), Gtk.ResponseType.CANCEL,
+                           t("dialog.open"), Gtk.ResponseType.OK)
         for name, mimes in VIDEO_FILTERS:
             filt = Gtk.FileFilter()
-            filt.set_name(name)
+            filt.set_name(t(name))
             for mime in mimes:
                 filt.add_mime_type(mime)
             dialog.add_filter(filt)
         all_filt = Gtk.FileFilter()
-        all_filt.set_name("Wszystkie pliki")
+        all_filt.set_name(t("filter.all"))
         all_filt.add_pattern("*")
         dialog.add_filter(all_filt)
         if self.video:
@@ -1073,15 +1692,14 @@ class App:
             self._remember_video(path)
             save_config(self.video, self.fps, self.recent)
             self._refresh_ui()
-            self._status("Wybrano: %s — kliknij „Ustaw jako tapetę”."
-                         % os.path.basename(path))
+            self._status(t("page.wallpapers.chosen", os.path.basename(path)))
             # jeśli tapeta już gra, podmień plik od razu
             if self.mpv is not None:
                 self._start()
 
     def _on_set(self, _btn):
         if not self.video:
-            self._status("Najpierw wybierz plik wideo.")
+            self._status(t("page.wallpapers.choose_first"))
             return
         self.retries = 0
         save_config(self.video, self.fps, self.recent)
@@ -1090,11 +1708,11 @@ class App:
     def _on_stop(self, _btn):
         self.retries = 0
         self._stop()
-        self._status("Zatrzymano.")
+        self._status(t("page.wallpapers.stopped"))
 
     def _on_fps(self, scale):
         self.fps = int(scale.get_value())
-        self.fps_label.set_text("FPS: %d" % self.fps)
+        self.fps_label.set_text(t("page.wallpapers.fps", self.fps))
         save_config(self.video, self.fps, self.recent)
         if self._restart_id:
             GLib.source_remove(self._restart_id)
@@ -1114,7 +1732,7 @@ class App:
 
     def _start(self):
         if not self.video or not os.path.isfile(self.video):
-            self._status("Plik nie istnieje: %s" % (self.video or "—"))
+            self._status(t("engine.file_missing", self.video or "—"))
             return
 
         # kliknięcie „Ustaw” przy identycznych parametrach = brak restartu
@@ -1122,8 +1740,8 @@ class App:
                 and self.playing_video == self.video
                 and self.playing_fps == self.fps):
             self._refresh_ui()
-            self._status("Tapeta już działa: %s (%d FPS, pętla)"
-                         % (os.path.basename(self.video), self.fps))
+            self._status(t("engine.already_running",
+                           os.path.basename(self.video), self.fps))
             return
 
         self._stop(silent=True)
@@ -1135,7 +1753,7 @@ class App:
         self._stack_below_desktop_icons()
         wid = self.wallpaper.mpv_wid()
         if not wid:
-            self._fail("Nie udało się przygotować okna tapety.")
+            self._fail(t("engine.window_failed"))
             return
 
         cmd = ["mpv",
@@ -1150,14 +1768,14 @@ class App:
             )
         except OSError as exc:
             self.mpv = None
-            self._fail("Nie udało się uruchomić mpv: %s" % exc)
+            self._fail(t("engine.mpv_failed", exc))
             return
 
         self.playing_video = self.video
         self.playing_fps = self.fps
         self._refresh_ui()
-        self._status("Tapeta działa: %s (%d FPS, pętla)"
-                     % (os.path.basename(self.video), self.fps))
+        self._status(t("engine.running",
+                       os.path.basename(self.video), self.fps))
         # kontrola, czy mpv jeszcze żyje po starcie + pilnowanie warstwy
         self._check_id = GLib.timeout_add(CHECK_DELAY_MS, self._check_mpv)
         if self._layer_id:
@@ -1269,7 +1887,7 @@ class App:
             self.retries += 1
             self._start()
             return GLib.SOURCE_REMOVE
-        self._fail("mpv zakończył pracę — nie udało się odtworzyć pliku.")
+        self._fail(t("engine.mpv_exited"))
         return GLib.SOURCE_REMOVE
 
     def _fail(self, text):
@@ -1324,6 +1942,15 @@ class App:
         self.win.present()
         return GLib.SOURCE_REMOVE
 
+    def _retranslate_tray(self):
+        """Podmienia napisy w menu tray po zmianie języka."""
+        items = getattr(self, "_tray_items", None)
+        if not items:
+            return
+        for item, key in zip(items, ("tray.open", "tray.stop",
+                                    "tray.start", "tray.quit")):
+            item.set_label(t(key))
+
     def shutdown(self):
         self._stop(silent=True)
         try:
@@ -1345,18 +1972,20 @@ class App:
             return
 
         menu = Gtk.Menu()
-        item_open = Gtk.MenuItem(label="Otwórz CRAB")
+        item_open = Gtk.MenuItem(label=t("tray.open"))
         item_open.connect("activate", lambda *_: self.show_window())
-        self.tray_stop = Gtk.MenuItem(label="Zatrzymaj tapetę")
+        self.tray_stop = Gtk.MenuItem(label=t("tray.stop"))
         self.tray_stop.connect("activate", lambda *_: self._on_stop(None))
-        self.tray_start = Gtk.MenuItem(label="Wznów tapetę")
+        self.tray_start = Gtk.MenuItem(label=t("tray.start"))
         self.tray_start.connect("activate", lambda *_: self._on_set(None))
-        item_quit = Gtk.MenuItem(label="Zakończ aplikację")
+        item_quit = Gtk.MenuItem(label=t("tray.quit"))
         item_quit.connect("activate", lambda *_: self.quit())
         for item in (item_open, self.tray_stop, self.tray_start,
                      Gtk.SeparatorMenuItem(), item_quit):
             menu.append(item)
         menu.show_all()
+        self._tray_items = (item_open, self.tray_stop, self.tray_start,
+                            item_quit)
 
         try:
             ind = AppInd.Indicator.new(
@@ -1377,11 +2006,8 @@ def _missing_mpv_dialog():
     dialog = Gtk.MessageDialog(
         message_type=Gtk.MessageType.ERROR,
         buttons=Gtk.ButtonsType.CLOSE,
-        text="Brak programu mpv")
-    dialog.format_secondary_text(
-        "Do odtwarzania wideo potrzebny jest mpv.\n"
-        "Zainstaluj go w terminalu:\n\n"
-        "    sudo apt install mpv")
+        text=t("dialog.missing_mpv_title"))
+    dialog.format_secondary_text(t("dialog.missing_mpv_text"))
     dialog.run()
     dialog.destroy()
 
@@ -1406,7 +2032,29 @@ def _try_single_instance():
     return True
 
 
+def _previous_version():
+    """Wersja z ostatniego uruchomienia (do komunikatu po aktualizacji)."""
+    path = os.path.join(CONFIG_DIR, "last_version")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def _remember_version(version=APP_VERSION):
+    path = os.path.join(CONFIG_DIR, "last_version")
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(version)
+    except OSError:
+        pass
+
+
 def main():
+    set_language(load_language())
+
     if not shutil.which("mpv"):
         _missing_mpv_dialog()
         sys.exit(1)
@@ -1422,6 +2070,12 @@ def main():
 
     app = App()
     holder["app"] = app
+
+    # komunikat „CRAB został zaktualizowany do wersji X” po podmianie plików
+    previous = _previous_version()
+    if previous and is_newer_version(APP_VERSION, previous):
+        GLib.idle_add(app._announce_update, APP_VERSION)
+    _remember_version()
 
     def _signal_handler(_signum, _frame):
         app.shutdown()

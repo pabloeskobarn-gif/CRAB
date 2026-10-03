@@ -32,6 +32,15 @@ session.
   are restored on the next start.
 - **Single instance** — launching the program twice shows the existing window
   instead of starting a second copy.
+- **Interface language** — Polish and English, switchable in Settings. The
+  choice applies immediately, without reinstalling and without restarting the
+  program, and is remembered for the next start. The language of the system is
+  detected automatically on first start.
+- **Update information** — Settings shows the installed version and can check
+  whether a newer release exists on GitHub.
+- **Update history** — a separate page lists every CRAB version with its date
+  and changes, newest first, taken from GitHub Releases or, when they are not
+  reachable, from the local `CHANGELOG.md`.
 
 ## Requirements
 
@@ -77,7 +86,8 @@ python3 main.py
 ```
 
 CRAB runs straight from the source tree. No build step and no root access
-required.
+required. Keep the `locales/` directory next to `main.py` — it holds the
+interface translations.
 
 ### Notification area icon
 
@@ -89,7 +99,7 @@ The GNOME extension `ubuntu-appindicators@ubuntu.com` must be enabled.
 
 ## Usage
 
-The interface is in Polish. The four steps below are:
+The four steps below are:
 
 1. **Wybierz wideo** — pick a video file from disk.
 2. **Ustaw jako tapetę** — the video starts looping as your desktop wallpaper.
@@ -100,6 +110,29 @@ Closing the main window with the **X** button hides the window only. The
 wallpaper and the application keep running. Use **Zakończ aplikację** in the
 notification area menu to stop the wallpaper and quit the program.
 
+The interface speaks Polish and English. Open **Ustawienia** and pick the
+language from the list; the whole window switches over at once.
+
+### Updates and version history
+
+CRAB never downloads or runs code from the network. New versions are installed
+manually, exactly like the current one.
+
+In **Ustawienia** the **Aktualizacje** section shows the installed version and
+offers two buttons:
+
+- **Sprawdź aktualizacje** — asks GitHub whether a newer release exists and
+  reports the version number.
+- **Otwórz historię** — opens the **Historia aktualizacji** page with every
+  version, its release date and the list of changes, newest first. When the
+  newest installed version is reached, the program reports that CRAB has been
+  updated and offers a **Co nowego?** button that opens the entry for that
+  version.
+
+The page reads GitHub Releases and falls back to the `CHANGELOG.md` file in the
+program directory when the network is unavailable, so the information is never
+written twice.
+
 ### Configuration
 
 Settings are stored in `~/.config/crab/config.json`:
@@ -108,7 +141,8 @@ Settings are stored in `~/.config/crab/config.json`:
 {
   "video": "/path/to/wallpaper.mp4",
   "fps": 30,
-  "recent": ["/path/to/previous/wallpaper.mp4"]
+  "recent": ["/path/to/previous/wallpaper.mp4"],
+  "language": "pl"
 }
 ```
 
@@ -157,10 +191,11 @@ possible.
 - No separate wallpaper per monitor, no playlists and no scheduled or
   time-based switching.
 - The preview image is taken from the first frame of the video.
-- The interface is available in Polish only. The documentation is in English.
 - No pause, no volume control and no video filters are exposed; playback
   itself is silent by design.
-- Version 0.2.0 is a beta. Behaviour may change before a 1.0 release.
+- The update check only informs about a new version. CRAB never downloads or
+  runs anything from the network.
+- Version 0.3.0 is a beta. Behaviour may change before a 1.0 release.
 
 ## Troubleshooting
 
@@ -184,8 +219,9 @@ Switch the filter to "Wszystkie pliki".
 
 ## Development
 
-The project is a single Python file with no third-party Python packages. It
-uses only the standard library plus the system GTK and mpv bindings.
+The program is a single Python file plus the translation files, with no
+third-party Python packages. It uses only the standard library plus the system
+GTK and mpv bindings.
 
 ```bash
 python3 main.py                   # run
@@ -202,9 +238,52 @@ The code is organised in layers inside `main.py`:
   notification area icon).
 - **User interface** — `App._build_ui` and the `App._build_*` methods (window,
   theme in `CSS`, preview, recent list).
+- **Translations and releases** — `locales/*.json`, `t()`, version parsing and
+  the update history readers.
 
 Keeping the interface in its own layer means changes to the look of the program
 never touch the wallpaper engine.
+
+### Adding a language
+
+All interface texts live outside the code, in `locales/`:
+
+```
+locales/
+    en.json
+    pl.json
+```
+
+Every file holds the same set of keys plus a small `meta` object:
+
+```json
+{
+  "meta": { "code": "pl", "name": "Polish", "native_name": "Polski" },
+  "nav.settings": "Ustawienia"
+}
+```
+
+To add a language, copy `en.json`, translate the values, set `meta` and CRAB
+picks the new file up on its own — the list in Settings is built from the files
+present in the directory. Unknown keys fall back to English, and a missing file
+falls back to the default English strings.
+
+### Releasing a version
+
+`CHANGELOG.md` is the single place where changes are written down, in
+[Keep a Changelog](https://keepachangelog.com/) format with the date in the
+heading:
+
+```markdown
+## [0.3.1] — 2026-10-04
+
+### Added
+- Something new
+```
+
+Bump `APP_VERSION` in `main.py` and tag the release on GitHub. The program
+reads GitHub Releases for the history page and keeps using `CHANGELOG.md` as a
+fallback, so the same entry serves both.
 
 ## Author
 
