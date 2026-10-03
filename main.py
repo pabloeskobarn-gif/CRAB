@@ -28,6 +28,7 @@ Podział kodu (bez zmiany działania silnika):
 Wymagania: sesja X11 (Pop!_OS 22.04 domyślnie), mpv, python3-gi (GTK 3).
 """
 
+import datetime
 import hashlib
 import json
 import locale
@@ -37,6 +38,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import urllib.error
 import urllib.request
@@ -63,7 +65,7 @@ except ImportError:
 APP_ID = "crab"
 APP_TITLE = "CRAB"
 APP_SUBTITLE = "Custom Responsive Animated Backgrounds"
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 APP_WINDOW_TITLE = "CRAB"
 
 CONFIG_DIR = os.path.join(GLib.get_user_config_dir(), "crab")
@@ -101,6 +103,8 @@ UPDATE_TIMEOUT_SEC = 8
 USER_AGENT = "CRAB/%s"
 
 RECENT_MAX = 8
+GALLERY_MAX = 24          # ile tapet trzymamy na zakladce „My wallpapers”
+FFPROBE_TIMEOUT = 20      # sekund na odczyt danych pliku przez ffprobe
 
 FPS_MIN, FPS_MAX, FPS_DEFAULT = 15, 60, 30
 RESTART_DELAY_MS = 400   # debounce suwaka FPS
@@ -490,6 +494,7 @@ CSS = b"""
 #crab-filename {
     color: #cdd3e0;
 }
+#crab-accent { color: #4a9eff; font-size: 10pt; }
 #crab-path {
     color: #7d8496;
     font-size: 9pt;
@@ -583,6 +588,21 @@ scale.crab-scale highlight {
     border-radius: 12px;
 }
 #crab-recent-row:hover { border-color: #3d7bfd; }
+
+/* galeria tapet */
+.crab-thumb {
+    background-color: #1b1f28;
+    border: 1px solid #262b36;
+    border-radius: 10px;
+    padding: 4px;
+}
+.crab-thumb:hover { background-color: #232936; }
+.crab-thumb-selected {
+    background-color: #1f2a3d;
+    border: 2px solid #4a9eff;
+}
+#crab-gallery-scroll { background-color: #14161c; }
+#crab-gallery-scroll > viewport { background-color: #14161c; }
 """
 
 
@@ -651,6 +671,90 @@ def preview_cache_path(video):
     return os.path.join(PREVIEW_DIR, digest + ".jpg")
 
 
+def format_file_size(size_bytes):
+    """Rozmiar pliku w czytelnej postaci („12,4 MB”)."""
+    size = float(size_bytes or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return "%d %s" % (int(size), unit) if unit == "B" \
+                else "%.1f %s" % (size, unit)
+        size /= 1024.0
+    return ""
+
+
+def format_duration(seconds):
+    """Czas w formacie m:ss albo h:mm:ss; None gdy nie wiadomo."""
+    try:
+        total = int(round(float(seconds)))
+    except (TypeError, ValueError):
+        return None
+    if total <= 0:
+        return None
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    return "%d:%02d:%02d" % (hours, minutes, secs) if hours \
+        else "%d:%02d" % (minutes, secs)
+
+
+def _parse_frame_rate(value):
+    """„30/1” -> 30.0; None gdy nie da się odczytać."""
+    try:
+        num, den = str(value).split("/")
+        rate = float(num) / float(den)
+    except (AttributeError, ValueError, ZeroDivisionError):
+        return None
+    return rate if rate > 0 else None
+
+
+def video_metadata(video):
+    """Dane o pliku wideo odczytane przez ffprobe.
+
+    Zwraca słownik z kluczami: format, size, duration, resolution, fps,
+    modified. Gdy ffprobe nie jest zainstalowane albo pliku nie da się
+    odczytać, zwraca {} — zakładka działa wtedy dalej bez tych danych.
+    """
+    if not video or not os.path.isfile(video):
+        return {}
+    command = ["ffprobe", "-v", "quiet", "-print_format", "json",
+               "-show_format", "-show_streams", "--", video]
+    try:
+        raw = subprocess.run(command, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL,
+                             timeout=FFPROBE_TIMEOUT, check=False).stdout
+        data = json.loads(raw.decode("utf-8", "replace"))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+
+    info = {}
+    container = data.get("format") or {}
+    streams = [s for s in (data.get("streams") or [])
+               if isinstance(s, dict)]
+    stream = next((s for s in streams
+                   if s.get("codec_type") == "video"), {})
+    extension = os.path.splitext(video)[1].lstrip(".").upper()
+    info["format"] = extension or None
+    try:
+        info["size"] = format_file_size(os.path.getsize(video))
+    except OSError:
+        info["size"] = None
+    info["duration"] = format_duration(container.get("duration"))
+    width, height = stream.get("width"), stream.get("height")
+    info["resolution"] = "%d x %d" % (width, height) if width and height \
+        else None
+    rate = _parse_frame_rate(stream.get("avg_frame_rate")
+                             or stream.get("r_frame_rate"))
+    if rate is None:
+        info["fps"] = None
+    else:
+        info["fps"] = ("%.2f" % rate).rstrip("0").rstrip(".")
+    try:
+        info["modified"] = datetime.datetime.fromtimestamp(
+            os.path.getmtime(video)).strftime("%Y-%m-%d %H:%M")
+    except OSError:
+        info["modified"] = None
+    return info
+
+
 # ---------------------------------------------------------------- konfiguracja
 
 def _read_config_file(path):
@@ -672,6 +776,21 @@ def _clean_recent(items):
     return out
 
 
+def _clean_gallery(items):
+    """Lista tapet na zakladce: tylko istniejace pliki, bez duplikatow."""
+    out, seen = [], set()
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, str) or item in seen:
+            continue
+        if not os.path.isfile(item):
+            continue
+        seen.add(item)
+        out.append(item)
+        if len(out) >= GALLERY_MAX:
+            break
+    return out
+
+
 def load_config():
     """Wczytuje ustawienia; przy braku nowego pliku czyta konfigurację
     Mini Wallpaper BETA, żeby migracja niczego nie traciła."""
@@ -683,7 +802,7 @@ def load_config():
         except (OSError, ValueError, TypeError):
             continue
     if not isinstance(data, dict):
-        return None, FPS_DEFAULT, []
+        return None, FPS_DEFAULT, [], []
     video = data.get("video")
     try:
         fps = int(data.get("fps", FPS_DEFAULT))
@@ -695,11 +814,17 @@ def load_config():
     recent = _clean_recent(data.get("recent"))
     if video and video not in recent:
         recent.insert(0, video)
-    return video, fps, recent
+    gallery = _clean_gallery(data.get("gallery"))
+    if video and video not in gallery:
+        gallery.insert(0, video)
+    return video, fps, recent, gallery
 
 
-def save_config(video, fps, recent):
-    _write_config({"video": video, "fps": fps, "recent": recent})
+def save_config(video, fps, recent, gallery=None):
+    updates = {"video": video, "fps": fps, "recent": recent}
+    if gallery is not None:
+        updates["gallery"] = gallery
+    _write_config(updates)
 
 
 def _write_config(updates):
@@ -831,7 +956,7 @@ class WallpaperWindow(Gtk.Window):
 class App:
     def __init__(self):
         set_language(load_language())
-        self.video, self.fps, self.recent = load_config()
+        self.video, self.fps, self.recent, self.gallery = load_config()
         if self.video and not os.path.isfile(self.video):
             self.video = None
         self.mpv = None
@@ -848,6 +973,10 @@ class App:
         self.stack = None
         self.nav_buttons = {}
         self.recent = list(self.recent or [])
+        self.gallery = list(self.gallery or [])
+        self.gallery_thumbs = []
+        self._info_cache = {}
+        self._thumb_pending = set()
 
         # stan aktualizacji i historii wydań
         self.update_entries = []
@@ -899,7 +1028,7 @@ class App:
 
     def _build_ui(self):
         self.win = Gtk.Window(title=APP_WINDOW_TITLE)
-        self.win.set_default_size(980, 640)
+        self.win.set_default_size(1020, 860)
         self.win.set_size_request(880, 560)
         self.win.connect("delete-event", self._on_delete)
         apply_crab_theme(self.win)
@@ -1034,6 +1163,7 @@ class App:
     # ------------------------------------------------------- strona: tapety
 
     def _build_page_wallpapers(self):
+        """Zakladka „My wallpapers”: duzy podglad, karty po prawej, galeria."""
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         page.set_name("wallpapers")
         page.set_margin_top(26)
@@ -1045,40 +1175,111 @@ class App:
         heading.set_name("crab-section-title")
         page.pack_start(heading, False, False, 0)
 
-        # duży podgląd
+        body = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+        body.set_vexpand(True)
+        page.pack_start(body, True, True, 0)
+
+        # --- lewa kolumna: podglad + komunikat statusu
+        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+
         preview_frame = Gtk.Frame()
         preview_frame.set_name("crab-preview-frame")
         preview_frame.set_shadow_type(Gtk.ShadowType.NONE)
         self.preview_image = Gtk.Image()
         self.preview_image.set_name("crab-preview")
-        self.preview_image.set_size_request(640, 360)
         self.preview_image.set_valign(Gtk.Align.CENTER)
+        self.preview_image.set_size_request(560, 315)
         if not self.video:
             self.preview_image.set_from_icon_name(
                 "video-x-generic-symbolic", Gtk.IconSize.DIALOG)
         preview_frame.add(self.preview_image)
-        page.pack_start(preview_frame, True, True, 0)
+        left.pack_start(preview_frame, True, True, 0)
 
-        # nazwa i ścieżka pliku
+        self.status = Gtk.Label(label=t("page.wallpapers.ready"), xalign=0)
+        self.status.set_name("crab-status")
+        self.status.set_line_wrap(True)
+        left.pack_start(self.status, False, False, 0)
+        body.pack_start(left, True, True, 0)
+
+        # --- prawa kolumna: karty Plik i Odtwarzanie
+        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        side.set_size_request(330, -1)
+        body.pack_start(side, False, False, 0)
+
+        file_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        file_card.get_style_context().add_class("crab-card")
+        file_card.set_border_width(16)
+        file_card.set_name("crab-card-file")
+        file_card.pack_start(
+            Gtk.Label(label=t("page.wallpapers.file_card"), xalign=0),
+            False, False, 0)
+
         self.file_label = Gtk.Label(label=t("page.wallpapers.no_file"), xalign=0)
         self.file_label.set_name("crab-filename")
         self.file_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
-        page.pack_start(self.file_label, False, False, 0)
+        file_card.pack_start(self.file_label, False, False, 0)
 
         self.path_label = Gtk.Label(label="", xalign=0)
         self.path_label.set_name("crab-path")
         self.path_label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
-        page.pack_start(self.path_label, False, False, 0)
+        file_card.pack_start(self.path_label, False, False, 0)
 
-        # wybór pliku
+        self.info_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.info_labels = {}
+        for key in ("format", "size", "duration", "resolution", "fps",
+                    "modified"):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            title = Gtk.Label(
+                label=t("page.wallpapers.info_%s" % key), xalign=0)
+            title.set_name("crab-muted")
+            title.set_size_request(120, -1)
+            value = Gtk.Label(label=t("page.wallpapers.info_unknown"), xalign=0)
+            value.set_hexpand(True)
+            value.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+            value.set_selectable(True)
+            row.pack_start(title, False, False, 0)
+            row.pack_start(value, True, True, 0)
+            self.info_box.pack_start(row, False, False, 0)
+            self.info_labels[key] = value
+        file_card.pack_start(self.info_box, False, False, 0)
+        side.pack_start(file_card, False, False, 0)
+
+        play_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        play_card.get_style_context().add_class("crab-card")
+        play_card.set_border_width(16)
+        play_card.set_name("crab-card-playback")
+        play_card.pack_start(
+            Gtk.Label(label=t("page.wallpapers.playback_card"), xalign=0),
+            False, False, 0)
+
         self.btn_choose = make_button(
-            t("page.wallpapers.choose"), "folder-open-symbolic",
+            t("page.wallpapers.add"), "folder-open-symbolic",
             "crab-secondary", self._on_choose,
             t("page.wallpapers.choose_tooltip"))
-        page.pack_start(self.btn_choose, False, False, 0)
+        play_card.pack_start(self.btn_choose, True, True, 0)
 
-        # akcje — te same metody co w wersji BETA
-        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        fps_head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.fps_label = Gtk.Label(label=t("page.wallpapers.fps", self.fps), xalign=0)
+        fps_head.pack_start(theme_icon("preferences-system-time-symbolic", 16),
+                            False, False, 0)
+        fps_head.pack_start(self.fps_label, True, True, 0)
+        play_card.pack_start(fps_head, False, False, 0)
+
+        self.fps_scale = Gtk.Scale.new_with_range(
+            Gtk.Orientation.HORIZONTAL, FPS_MIN, FPS_MAX, 1)
+        self.fps_scale.get_style_context().add_class("crab-scale")
+        self.fps_scale.set_value(self.fps)
+        self.fps_scale.set_draw_value(False)
+        self.fps_scale.set_hexpand(True)
+        self.fps_scale.connect("value-changed", self._on_fps)
+        play_card.pack_start(self.fps_scale, False, False, 0)
+
+        hint = Gtk.Label(label=t("page.wallpapers.fps_hint"), xalign=0)
+        hint.set_name("crab-muted")
+        hint.set_line_wrap(True)
+        play_card.pack_start(hint, False, False, 0)
+
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         self.btn_set = make_button(
             t("page.wallpapers.set"), "emblem-system-symbolic", "crab-primary",
             self._on_set, t("page.wallpapers.set_tooltip"))
@@ -1088,43 +1289,43 @@ class App:
             t("page.wallpapers.stop_tooltip"))
         actions.pack_start(self.btn_set, True, True, 0)
         actions.pack_start(self.btn_stop, True, True, 0)
-        page.pack_start(actions, False, False, 0)
+        play_card.pack_start(actions, True, True, 0)
 
-        # suwak FPS
-        fps_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        fps_card.get_style_context().add_class("crab-card")
-        fps_card.set_margin_top(4)
-        fps_card.set_margin_bottom(2)
-        fps_card.set_margin_start(2)
-        fps_card.set_margin_end(2)
-        fps_card.set_border_width(16)
+        self.btn_remove = make_button(
+            t("page.wallpapers.remove"), "list-remove-symbolic",
+            "crab-danger", self._on_remove,
+            t("page.wallpapers.remove_tooltip"))
+        play_card.pack_start(self.btn_remove, True, True, 0)
+        side.pack_start(play_card, False, False, 0)
 
-        fps_head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.fps_label = Gtk.Label(label=t("page.wallpapers.fps", self.fps), xalign=0)
-        fps_head.pack_start(theme_icon("preferences-system-time-symbolic", 16),
-                            False, False, 0)
-        fps_head.pack_start(self.fps_label, True, True, 0)
-        fps_card.pack_start(fps_head, False, False, 0)
+        # --- galeria tapet pod podgladem
+        gallery_head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                               spacing=8)
+        gallery_head.pack_start(
+            theme_icon("view-list-symbolic", 16), False, False, 0)
+        gallery_head.pack_start(
+            Gtk.Label(label=t("page.wallpapers.gallery"), xalign=0),
+            True, True, 0)
+        self.gallery_count = Gtk.Label(label="", xalign=1)
+        self.gallery_count.set_name("crab-muted")
+        gallery_head.pack_start(self.gallery_count, False, False, 0)
+        page.pack_start(gallery_head, False, False, 0)
 
-        self.fps_scale = Gtk.Scale.new_with_range(
-            Gtk.Orientation.HORIZONTAL, FPS_MIN, FPS_MAX, 1)
-        self.fps_scale.get_style_context().add_class("crab-scale")
-        self.fps_scale.set_value(self.fps)
-        self.fps_scale.set_draw_value(False)
-        self.fps_scale.set_hexpand(True)
-        self.fps_scale.connect("value-changed", self._on_fps)
-        fps_card.pack_start(self.fps_scale, False, False, 0)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        scroller.set_shadow_type(Gtk.ShadowType.IN)
+        scroller.set_min_content_height(124)
+        self.gallery_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                                   spacing=10)
+        self.gallery_box.set_margin_top(4)
+        self.gallery_box.set_margin_bottom(4)
+        self.gallery_box.set_margin_start(4)
+        self.gallery_box.set_margin_end(4)
+        scroller.add(self.gallery_box)
+        page.pack_start(scroller, False, False, 0)
 
-        hint = Gtk.Label(label=t("page.wallpapers.fps_hint"), xalign=0)
-        hint.set_name("crab-muted")
-        fps_card.pack_start(hint, False, False, 0)
-        page.pack_start(fps_card, False, False, 0)
-
-        self.status = Gtk.Label(label=t("page.wallpapers.ready"), xalign=0)
-        self.status.set_name("crab-status")
-        self.status.set_line_wrap(True)
-        page.pack_start(self.status, False, False, 0)
-
+        self._refresh_gallery()
+        self._refresh_file_info(self.video)
         return page
 
     # -------------------------------------------------- strona: ostatnie
@@ -1217,7 +1418,9 @@ class App:
         self.video = path
         self.retries = 0
         self._remember_video(path)
-        save_config(self.video, self.fps, self.recent)
+        self._add_to_gallery(path)
+        save_config(self.video, self.fps, self.recent, self.gallery)
+        self._refresh_gallery()
         self._refresh_ui()
         self._load_preview(path)
         self._status(t("page.wallpapers.set_done", os.path.basename(path)))
@@ -1385,7 +1588,14 @@ class App:
 
         self.changelog_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
                                      spacing=12)
-        page.pack_start(self.changelog_box, True, True, 0)
+        # lista wydan w przewijanym obszarze - bez tego strona rosnie
+        # z kazda wersja i wymusza okno wyzsze niz ekran
+        changelog_scroll = Gtk.ScrolledWindow()
+        changelog_scroll.set_policy(Gtk.PolicyType.NEVER,
+                                    Gtk.PolicyType.AUTOMATIC)
+        changelog_scroll.set_min_content_height(360)
+        changelog_scroll.add(self.changelog_box)
+        page.pack_start(changelog_scroll, True, True, 0)
 
         return page
 
@@ -1657,10 +1867,13 @@ class App:
             return
 
         def worker():
+            tmp_dir = ""
             try:
                 os.makedirs(PREVIEW_DIR, exist_ok=True)
-                tmp_dir = os.path.join(PREVIEW_DIR, ".tmp-%d" % os.getpid())
-                os.makedirs(tmp_dir, exist_ok=True)
+                # katalog tylko dla tego watku — kilka miniaturek powstaje
+                # jednoczesnie i wspolny katalog kasowalby pliki innych
+                tmp_dir = tempfile.mkdtemp(
+                    prefix=".tmp-%d-" % os.getpid(), dir=PREVIEW_DIR)
                 subprocess.run(
                     ["mpv", "--no-config", "--really-quiet", "--vo=image",
                      "--vo-image-outdir=" + tmp_dir, "--frames=1",
@@ -1674,21 +1887,209 @@ class App:
             except (OSError, subprocess.SubprocessError):
                 pass
             finally:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
+                if tmp_dir:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
             GLib.idle_add(self._apply_preview, cached, video)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _apply_preview(self, cached, video):
-        # ignorujemy wynik, jeśli użytkownik zdążył wybrać inny plik
+        # miniature galerii korzystaja z tego samego pliku cache wiec
+        # odswiezamy galerie zawsze, także dla pliku nieuzywanego jako tapeta
+        self._thumb_pending.discard(video)
+        if video in (getattr(self, "gallery", None) or []):
+            self._refresh_gallery()
+        # ignorujemy duzy podglad, jesli uzytkownik zdazyl wybrac inny plik
         if video != self.video or getattr(self, "preview_image", None) is None:
             return
         try:
             pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
-                cached, 720, 720, True)
+                cached, 560, 560, True)
         except GLib.Error:
             return
         self.preview_image.set_from_pixbuf(pixbuf)
+        self.preview_image.set_size_request(560, 315)
+
+    # --------------------------------------------------------- galeria tapet
+
+    def _thumb_pixbuf(self, path):
+        """Miniaturka z cache; brak pliku = ikona i kolejne wygenerowanie."""
+        cached = preview_cache_path(path)
+        if cached is None:
+            return None
+        if not os.path.isfile(cached):
+            if path not in self._thumb_pending:
+                self._thumb_pending.add(path)
+                self._load_preview(path)
+            return None
+        try:
+            # Gtk.Image pokazuje obraz w naturalnym rozmiarze, wiec skalujemy
+            # juz tutaj — inaczej miniaturka rozpycha pasek galerii
+            return GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                cached, 150, 84, True)
+        except GLib.Error:
+            return None
+
+    def _refresh_gallery(self):
+        """Buduje (albo odswieza) pasek miniaturek galerii."""
+        box = getattr(self, "gallery_box", None)
+        if box is None:
+            return
+        for child in list(box.get_children()):
+            box.remove(child)
+        self.gallery_thumbs = []
+        for path in self.gallery:
+            widget = self._make_thumb(path)
+            self.gallery_thumbs.append(widget)
+            box.pack_start(widget, False, False, 0)
+        if not self.gallery:
+            empty = Gtk.Label(
+                label=t("page.wallpapers.gallery_empty"), xalign=0)
+            empty.set_name("crab-muted")
+            box.pack_start(empty, False, False, 0)
+        count = len(self.gallery)
+        self.gallery_count.set_text(
+            "" if not count
+            else t("page.wallpapers.gallery_count", count))
+        box.show_all()
+        self._refresh_thumb_selection()
+
+    def _refresh_thumb_selection(self):
+        """Zaznacza miniature biezacej tapety i opisuje aktywna."""
+        playing = self.mpv is not None
+        for path, widget in zip(self.gallery, self.gallery_thumbs or []):
+            button = widget.get_children()[0]
+            context = button.get_style_context()
+            selected = path == self.video
+            if selected:
+                context.add_class("crab-thumb-selected")
+            else:
+                context.remove_class("crab-thumb-selected")
+            if selected and playing:
+                context.add_class("crab-thumb-selected")
+            badge = widget.get_children()[2]
+            if selected and playing:
+                badge.set_text(t("page.wallpapers.active"))
+                badge.set_name("crab-accent")
+            else:
+                badge.set_text("")
+
+    def _make_thumb(self, path):
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        name_text = os.path.basename(path)
+        card.set_tooltip_text(t("page.wallpapers.thumb_tooltip", name_text))
+
+        button = Gtk.Button()
+        button.get_style_context().add_class("crab-thumb")
+        image = Gtk.Image()
+        pixbuf = self._thumb_pixbuf(path)
+        if pixbuf is None:
+            image.set_from_icon_name("video-x-generic-symbolic",
+                                     Gtk.IconSize.LARGE_TOOLBAR)
+        else:
+            image.set_from_pixbuf(pixbuf)
+        # Gtk.Image przyjmuje rozmiar z obrazu, wiec limit ustawiamy po nim
+        image.set_size_request(150, 84)
+        button.add(image)
+        button.connect("clicked", self._on_thumb_clicked, path)
+        card.pack_start(button, False, False, 0)
+
+        label = Gtk.Label(label=name_text, xalign=0.5)
+        label.set_name("crab-muted")
+        label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+        label.set_max_width_chars(20)
+        card.pack_start(label, False, False, 0)
+
+        badge = Gtk.Label(label="", xalign=0.5)
+        badge.set_name("crab-muted")
+        card.pack_start(badge, False, False, 0)
+        return card
+
+    def _add_to_gallery(self, path):
+        """Dopisuje tapete na poczatek galerii (bez duplikatow, z limitem)."""
+        if not path:
+            return
+        self.gallery = [p for p in self.gallery if p != path]
+        self.gallery.insert(0, path)
+        del self.gallery[GALLERY_MAX:]
+
+    def _on_thumb_clicked(self, _button, path):
+        """Klik = zaznaczenie, dwa szybkie klikniecia = ustaw tapete."""
+        now = GLib.get_monotonic_time()
+        previous = getattr(self, "_last_thumb_click", None)
+        self._last_thumb_click = (path, now)
+        if previous and previous[0] == path and now - previous[1] < 400000:
+            self._last_thumb_click = None
+            self._select_video(path)
+            self._on_set(None)
+            return
+        self._select_video(path)
+
+    def _select_video(self, path):
+        """Wybiera tapete z galerii: podglad, dane pliku, stan przyciskow."""
+        if not path:
+            return
+        self.video = path
+        self.retries = 0
+        self._remember_video(path)
+        self._add_to_gallery(path)
+        save_config(self.video, self.fps, self.recent, self.gallery)
+        self._refresh_ui()
+        self._load_preview(path)
+        self._refresh_thumb_selection()
+        self._status(t("page.wallpapers.chosen", os.path.basename(path)))
+
+    def _on_remove(self, _btn):
+        """Usuwa tapete z galerii (pliku na dysku nie ruszamy)."""
+        path = self.video
+        if not path or path not in self.gallery:
+            self._status(t("page.wallpapers.nothing_selected"))
+            return
+        self.gallery = [p for p in self.gallery if p != path]
+        if self.video == path:
+            self.video = self.gallery[0] if self.gallery else None
+            self.retries = 0
+            if self.mpv is not None:
+                if self.video:
+                    self._start()
+                else:
+                    self._stop()
+        save_config(self.video, self.fps, self.recent, self.gallery)
+        self._refresh_gallery()
+        self._refresh_ui()
+        if self.video:
+            self._load_preview(self.video)
+        self._status(t("page.wallpapers.removed", os.path.basename(path)))
+
+    # ------------------------------------------------- dane o wybranym pliku
+
+    def _refresh_file_info(self, video):
+        """Karta „Plik”: odczyt ffprobe w watku, wynik w UI watku glownym."""
+        labels = getattr(self, "info_labels", None) or {}
+        unknown = t("page.wallpapers.info_unknown")
+        for label in labels.values():
+            label.set_text(unknown)
+        if not video:
+            return
+        if video in self._info_cache:
+            self._apply_file_info(video, self._info_cache[video])
+            return
+        for label in labels.values():
+            label.set_text(t("page.wallpapers.info_loading"))
+
+        def worker():
+            data = video_metadata(video)
+            GLib.idle_add(self._apply_file_info, video, data)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_file_info(self, video, data):
+        if video != getattr(self, "video", None):
+            return
+        self._info_cache[video] = data
+        unknown = t("page.wallpapers.info_unknown")
+        for key, label in (getattr(self, "info_labels", None) or {}).items():
+            label.set_text(data.get(key) or unknown)
 
     # ------------------------------------------------------------ pomocnicze
 
@@ -1711,6 +2112,11 @@ class App:
             self.file_label.set_text(t("page.wallpapers.no_file"))
             self.path_label.set_text("")
             self.btn_set.set_sensitive(False)
+        if getattr(self, "btn_remove", None) is not None:
+            self.btn_remove.set_sensitive(
+                bool(self.video) and self.video in (self.gallery or []))
+        if getattr(self, "info_labels", None):
+            self._refresh_file_info(self.video)
         playing = self.mpv is not None
         self.btn_stop.set_sensitive(playing)
         if self.tray_stop is not None:
@@ -1756,7 +2162,9 @@ class App:
             self.video = path
             self.retries = 0
             self._remember_video(path)
-            save_config(self.video, self.fps, self.recent)
+            self._add_to_gallery(path)
+            save_config(self.video, self.fps, self.recent, self.gallery)
+            self._refresh_gallery()
             self._refresh_ui()
             self._status(t("page.wallpapers.chosen", os.path.basename(path)))
             # jeśli tapeta już gra, podmień plik od razu

@@ -12,6 +12,50 @@ Entries are written in English on purpose: the application translates them
 through its own translation system, so the history page follows the interface
 language.
 
+## [0.3.2] — 2026-10-03
+
+A rebuilt wallpapers tab with a gallery. The wallpaper engine and the update
+mechanism are untouched.
+
+### Added
+
+- The "My wallpapers" tab is rebuilt: a large preview on the left, and "File"
+  and "Playback" cards on the right.
+- A wallpaper gallery that shows several wallpapers at once, with up to 24
+  videos.
+- A single click on a gallery thumbnail selects a wallpaper, a double click
+  sets it as the wallpaper.
+- New buttons: "Add wallpaper" adds the chosen file to the gallery, and "Remove
+  from gallery" takes it out again. Removing a wallpaper never deletes the file
+  from disk.
+- The wallpaper that is currently playing is marked in the gallery with an
+  "active" badge.
+- The "File" card lists the format, size, duration, resolution, frame rate and
+  modification date of the selected video. The details are read with `ffprobe`;
+  when it is missing the card says so instead of failing.
+- The configuration file keeps the gallery in a new `gallery` list. Older
+  configuration files without that list are read normally.
+- Full translations for the new tab: Polish, English, German, French, Spanish,
+  Portuguese, Italian, Dutch, Swedish, Danish, Norwegian Bokmal and Finnish.
+
+### Fixed
+
+- The window no longer grows taller than the screen. The "Update history" page
+  scrolls now, instead of pushing the whole window further down with every
+  release.
+- Adding several wallpapers at once generates a thumbnail for each of them.
+  Thumbnails no longer share one temporary directory, and the gallery is
+  refreshed as soon as a thumbnail is ready, so no restart is needed to see
+  them.
+
+### Unchanged
+
+- Wallpaper engine: a `_NET_WM_WINDOW_TYPE_DESKTOP` window, playback through
+  mpv in a `GtkSocket`, software decoding, looping, the FPS filter, input
+  transparency and placement below the desktop icon window.
+- CRAB never downloads or runs code from the network. Updates are installed
+  manually; the program only reports that they are available.
+
 ## [0.3.1] — 2026-10-03
 
 Sidebar icon fix and the full language list. The wallpaper engine and the
