@@ -63,7 +63,7 @@ except ImportError:
 APP_ID = "crab"
 APP_TITLE = "CRAB"
 APP_SUBTITLE = "Custom Responsive Animated Backgrounds"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 APP_WINDOW_TITLE = "CRAB"
 
 CONFIG_DIR = os.path.join(GLib.get_user_config_dir(), "crab")

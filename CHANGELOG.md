@@ -12,6 +12,36 @@ Entries are written in English on purpose: the application translates them
 through its own translation system, so the history page follows the interface
 language.
 
+## [0.3.1] — 2026-10-03
+
+Sidebar icon fix and the full language list. The wallpaper engine and the
+layout are untouched.
+
+### Added
+
+- The language picker now offers 41 languages, and the list is sorted by each
+  language's own name.
+- Full translations for German, French, Spanish, Portuguese, Italian, Dutch,
+  Swedish, Danish, Norwegian Bokmal and Finnish. The remaining languages have
+  their own files, keep the English text and are ready to be filled in.
+- System language detection reads the environment variables first, so languages
+  that the system locale table does not cover (Norwegian, Rusyn, Scottish
+  Gaelic, Chinese) are recognised as well.
+
+### Fixed
+
+- The "Update history" icon now matches the other sidebar icons. Its previous
+  name was missing from the system icon theme, so a placeholder was drawn
+  instead.
+
+### Unchanged
+
+- Wallpaper engine: a `_NET_WM_WINDOW_TYPE_DESKTOP` window, playback through
+  mpv in a `GtkSocket`, software decoding, looping, the FPS filter, input
+  transparency and placement below the desktop icon window.
+- CRAB never downloads or runs code from the network. Updates are installed
+  manually; the program only reports that they are available.
+
 ## [0.3.0] — 2026-10-03
 
 Interface language, update checking and release history. The wallpaper engine is
