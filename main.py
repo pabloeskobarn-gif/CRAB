@@ -85,6 +85,8 @@ LOGO_PATH = os.path.join(
 LOCALES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "locales")
 FALLBACK_LANG = "en"
+# kody, którymi systemy operacyjne oznaczają język obecny w katalogu locales
+LANGUAGE_ALIASES = {"no": "nb", "in": "id", "iw": "he"}
 
 # ------------------------------------------------------------- aktualizacje
 # CRAB NIGDY nie pobiera i nie uruchamia kodu z sieci. Program jedynie
@@ -136,7 +138,11 @@ _current_lang = FALLBACK_LANG
 
 
 def available_languages():
-    """Kody języków obecne w katalogu locales/ (bez plików tymczasowych)."""
+    """Kody języków obecne w katalogu locales/ (bez plików tymczasowych).
+
+    Lista jest uporządkowana według nazwy własnej języka, więc przy wielu
+    językach lista wyboru pozostaje czytelna.
+    """
     codes = []
     try:
         for name in sorted(os.listdir(LOCALES_DIR)):
@@ -144,7 +150,13 @@ def available_languages():
                 codes.append(name[:-5])
     except OSError:
         pass
-    return codes or [FALLBACK_LANG]
+    if not codes:
+        return [FALLBACK_LANG]
+    meta = {}
+    for code in codes:
+        data = _load_locale_file(code).get("meta") or {}
+        meta[code] = (data.get("native_name") or data.get("name") or code).lower()
+    return sorted(codes, key=lambda code: (meta[code], code))
 
 
 def language_display_name(code):
@@ -157,6 +169,13 @@ def language_display_name(code):
 def detect_system_language():
     """Polski dla polskiego systemu, w pozostałych przypadkach angielski."""
     codes = []
+    # zmienne środowiskowe są miarodajniejsze niż locale biblioteki C,
+    # która dla wielu języków (nb, rue, gd...) zgłasza fallback
+    for var in ("LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"):
+        value = os.environ.get(var, "")
+        if value and value not in ("C", "POSIX"):
+            for part in value.split(":"):
+                codes.append(part.split(".")[0].split("@")[0])
     for getter in ("getlocale", "getdefaultlocale"):
         try:
             value = getattr(locale, getter)()
@@ -166,13 +185,10 @@ def detect_system_language():
             codes.append(str(value[0]))
         elif isinstance(value, str) and value:
             codes.append(value)
-    for var in ("LC_ALL", "LC_MESSAGES", "LANG"):
-        value = os.environ.get(var, "")
-        if value and value not in ("C", "POSIX"):
-            codes.append(value.split(".")[0].split("@")[0])
     supported = available_languages()
     for code in codes:
         code = code.split("_")[0].split("-")[0].lower()
+        code = LANGUAGE_ALIASES.get(code, code)
         if code in supported:
             return code
     return FALLBACK_LANG
@@ -955,7 +971,7 @@ class App:
                 ("wallpapers", "video-x-generic-symbolic", "nav.wallpapers"),
                 ("recent", "document-open-recent-symbolic", "nav.recent"),
                 ("settings", "preferences-system-symbolic", "nav.settings"),
-                ("changelog", "document-view-history-symbolic",
+                ("changelog", "view-list-symbolic",
                  "nav.changelog"),
                 ("about", "help-about-symbolic", "nav.about")):
             text = t(text)
@@ -1306,7 +1322,7 @@ class App:
             self._on_check_updates, t("updates.check"))
         self.update_buttons.pack_start(self.btn_check, False, False, 0)
         self.btn_history = make_button(
-            t("updates.open_history"), "document-view-history-symbolic",
+            t("updates.open_history"), "view-list-symbolic",
             "crab-secondary", self._on_open_history,
             t("updates.open_history"))
         self.update_buttons.pack_start(self.btn_history, False, False, 0)
