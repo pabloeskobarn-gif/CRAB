@@ -300,8 +300,11 @@ def _entries_from_github(releases):
         body = item.get("body") or ""
         changes = []
         for raw in body.splitlines():
-            line = re.sub(r"^[-*]\s+", "", raw.strip())
-            line = re.sub(r"^#{1,6}\s*", "", line).strip()
+            stripped = raw.strip()
+            # nagłówki markdown i separatory nie są zmianą w wydaniu
+            if not stripped or stripped.startswith("#"):
+                continue
+            line = re.sub(r"^[-*]\s+", "", stripped).strip()
             if line:
                 changes.append(line)
         if not changes:
@@ -333,6 +336,25 @@ def _write_cache(data):
         pass
 
 
+def _merge_entries(primary, secondary):
+    """Scala listy wpisów: z primary bez duplikatów, reszta z secondary.
+
+    Wersje obecne w GitHub Releases mają pierwszeństwo, więc treść
+    nie powtarza się; z CHANGELOG.md dochodzą wyłącznie starsze wydania,
+    których nie ma jeszcze na GitHubie.
+    """
+    merged = list(primary or [])
+    known = {(e.get("version") or "").lstrip("v") for e in merged}
+    for entry in secondary or []:
+        version = (entry.get("version") or "").lstrip("v")
+        if version and version not in known:
+            known.add(version)
+            merged.append(entry)
+    merged.sort(key=lambda e: parse_version(e.get("version")) or (0, 0, 0),
+                reverse=True)
+    return merged
+
+
 def fetch_release_history():
     """Pobiera historię wydań z GitHuba (wątek poza UI).
 
@@ -356,8 +378,10 @@ def fetch_release_history():
         return entries, "changelog:%s" % exc
     entries = _entries_from_github(releases)
     if entries:
-        _write_cache({"entries": entries})
-        return entries, None
+        # starsze wydania, których nie ma jeszcze jako Release
+        merged = _merge_entries(entries, load_changelog_entries())
+        _write_cache({"entries": merged})
+        return merged, None
     cached = _read_cache()
     if cached and cached.get("entries"):
         return cached["entries"], "cache:"
