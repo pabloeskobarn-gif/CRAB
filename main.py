@@ -217,6 +217,26 @@ def t(key, *args):
     return text % args if args else text
 
 
+def change_key(text):
+    """Klucz tłumaczenia dla pozycji listy zmian (tekst z CHANGELOG/Release)."""
+    slug = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return "changes.%s" % slug if slug else (text or "")
+
+
+def change_text(text):
+    """Pozycja listy zmian w języku interfejsu.
+
+    Teksty wydań są pisane po angielsku, więc każda pozycja ma klucz
+    w katalogu locales. Brak tłumaczenia nie usuwa pozycji — zostaje
+    wtedy oryginalny tekst angielski.
+    """
+    if not text:
+        return text
+    key = change_key(text)
+    translated = t(key)
+    return text if translated == key else translated
+
+
 # --------------------------------------------------------------- wersje
 
 def parse_version(value):
@@ -273,6 +293,12 @@ def _entries_from_changelog_text(text):
             if text_item.startswith("#"):
                 continue
             current["changes"].append(text_item)
+            continue
+        # wcięta linia bez znacznika to dalszy ciąg ostatniego punktu
+        if (line and current["changes"] and raw.startswith((" ", "\t"))
+                and not line.startswith(("#", "|"))):
+            current["changes"][-1] = "%s %s" % (
+                current["changes"][-1], line)
     if current:
         entries.append(current)
     return [e for e in entries if e["changes"]]
@@ -1403,7 +1429,7 @@ class App:
             row.set_margin_start(4)
             row.pack_start(theme_icon("object-select-symbolic", 14),
                            False, False, 0)
-            lbl = Gtk.Label(label=change, xalign=0)
+            lbl = Gtk.Label(label=change_text(change), xalign=0)
             lbl.set_line_wrap(True)
             lbl.set_hexpand(True)
             row.pack_start(lbl, True, True, 0)
@@ -1590,7 +1616,7 @@ class App:
             row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             row.pack_start(theme_icon("object-select-symbolic", 14),
                            False, False, 0)
-            lbl = Gtk.Label(label=change, xalign=0)
+            lbl = Gtk.Label(label=change_text(change), xalign=0)
             lbl.set_line_wrap(True)
             lbl.set_hexpand(True)
             row.pack_start(lbl, True, True, 0)

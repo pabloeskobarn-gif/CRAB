@@ -285,6 +285,11 @@ Bump `APP_VERSION` in `main.py` and tag the release on GitHub. The program
 reads GitHub Releases for the history page and keeps using `CHANGELOG.md` as a
 fallback, so the same entry serves both.
 
+Release text is written in English. The application matches every entry against
+the `changes.*` keys in `locales/`, so paste the changelog entry into the
+release notes instead of rewording it, and add a Polish translation for the new
+keys in `locales/pl.json`. Entries without a translation stay in English.
+
 ## Author
 
 CRAB is developed by [pabloeskobarn-gif](https://github.com/pabloeskobarn-gif).

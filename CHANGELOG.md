@@ -1,92 +1,99 @@
 # Changelog
 
-Wszystkie istotne zmiany w tym projekcie są opisywane w tym pliku.
-Format oparty o [Keep a Changelog](https://keepachangelog.com/pl/1.1.0/),
-wersjonowanie zgodne z [Semantic Versioning](https://semver.org/lang/pl/).
+All notable changes to this project are described in this file.
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+and versioning follows [Semantic Versioning](https://semver.org/).
 
-Ten plik jest źródłem prawdy dla sekcji „Historia aktualizacji” w aplikacji.
-CRAB czyta GitHub Releases, a przy braku połączenia z siecią lub gdy repozytorium
-nie zawiera jeszcze wydań — ten plik.
+This file is the single source of truth for the "Update history" page in the
+application. CRAB reads GitHub Releases, and falls back to this file when the
+network is unavailable or when the repository has no releases yet.
+
+Entries are written in English on purpose: the application translates them
+through its own translation system, so the history page follows the interface
+language.
 
 ## [0.3.0] — 2026-10-03
 
-Język interfejsu, sprawdzanie aktualizacji i historia wydań. Silnik tapety
-niezmieniony.
+Interface language, update checking and release history. The wallpaper engine is
+unchanged.
 
-### Dodane
+### Added
 
-- System tłumaczeń w katalogu `locales/` (pliki JSON, po jednym na język);
-  nowy język = nowy plik, bez zmian w kodzie aplikacji.
-- Wybór języka interfejsu w Ustawieniach: Polski i English. Zmiana działa
-  natychmiast, bez restartu aplikacji, i jest zapisywana w `config.json`.
-- Automatyczne wykrywanie języka systemu przy pierwszym uruchomieniu
-  (polski system → Polski, pozostałe → English).
-- Sprawdzanie aktualizacji w tle przez GitHub Releases API.
-- Sekcja „Aktualizacje” w Ustawieniach: przycisk „Sprawdź aktualizacje”,
-  aktualna wersja, informacja o dostępnej nowszej wersji.
-- Strona „Historia aktualizacji” z listą wydań od najnowszego do najstarszego.
-- Historia wydań czytana z GitHub Releases, z lokalnego `CHANGELOG.md`
-  jako źródłem zapasowym oraz z cache w `~/.cache/crab/releases.json`.
-- Komunikat „CRAB został zaktualizowany do wersji X.X.X” po podmianie plików
-  oraz okno „Co nowego?” z listą zmian danej wersji.
-- Menu tray i wszystkie etykiety przetłumaczone na wybrany język.
+- Translation system in the `locales/` directory (JSON files, one per language);
+  a new language is a new file, with no changes to the application code.
+- Interface language picker in Settings: Polish and English. The change applies
+  immediately, without restarting the application, and is saved in
+  `config.json`.
+- Automatic detection of the system language on first start (Polish system
+  leads to Polish, every other system leads to English).
+- Update checking in the background through the GitHub Releases API.
+- "Updates" section in Settings: a "Check for updates" button, the current
+  version and information about an available newer version.
+- "Update history" page with a list of releases from newest to oldest.
+- Release history read from GitHub Releases, from the local `CHANGELOG.md` as a
+  fallback and from the cache in `~/.cache/crab/releases.json`.
+- A "CRAB has been updated to version X.X.X" message after the files are
+  replaced, together with a "What's new?" window listing the changes of that
+  version.
+- The notification area menu and every label translated into the chosen
+  language.
 
-### Bez zmian
+### Unchanged
 
-- Silnik tapety: okno typu `_NET_WM_WINDOW_TYPE_DESKTOP`, odtwarzanie przez
-  mpv w `GtkSocket`, dekodowanie programowe, pętla, filtr FPS, przezroczystość
-  dla wejścia oraz umieszczenie pod oknem ikon pulpitu.
-- CRAB nie pobiera ani nie uruchamia kodu z sieci. Aktualizacje są
-  instalowane ręcznie; program jedynie informuje o ich dostępności.
+- Wallpaper engine: a `_NET_WM_WINDOW_TYPE_DESKTOP` window, playback through
+  mpv in a `GtkSocket`, software decoding, looping, the FPS filter, input
+  transparency and placement below the desktop icon window.
+- CRAB never downloads or runs code from the network. Updates are installed
+  manually; the program only reports that they are available.
 
 ## [0.2.0] — 2026-10-02
 
-Nowy interfejs i branding. Silnik tapety przeniesiony z Mini Wallpaper
-bez zmian.
+New interface and branding. The wallpaper engine was carried over from Mini
+Wallpaper without changes.
 
-### Dodane
+### Added
 
-- Ciemny interfejs CRAB z panelem bocznym i nawigacją.
-- Zakładka „Moje tapety” z dużym podglądem wideo, wyborem pliku,
-  przyciskami „Ustaw jako tapetę” i „Zatrzymaj” oraz suwakiem FPS.
-- Podgląd generowany z pierwszej klatki pliku, zapisywany w cache.
-- Zakładka „Ostatnio używane” z listą plików i przyciskiem „Ustaw”.
-- Zakładka „Ustawienia” z informacją o sesji, silniku, trybie dekodowania,
-  ścieżce konfiguracji i dostępności ikony w obszarze powiadomień.
-- Zakładka „O programie” z logo, nazwą, wersją i opisem.
-- Lista ostatnich plików zapisywana w konfiguracji.
-- Migracja ustawień: przy pierwszym uruchomieniu odczytywany jest stary
-  katalog konfiguracji Mini Wallpaper.
-- `LICENSE` (MIT) i `CHANGELOG.md`.
+- Dark CRAB interface with a sidebar and navigation.
+- "My wallpapers" tab with a large video preview, file picker, "Set as
+  wallpaper" and "Stop" buttons and an FPS slider.
+- Preview generated from the first frame of the file and stored in the cache.
+- "Recent" tab with a file list and a "Set" button.
+- "Settings" tab with information about the session, the engine, the decoding
+  mode, the configuration path and the notification area icon.
+- "About" tab with the logo, the name, the version and a description.
+- The recent file list is stored in the configuration.
+- Settings migration: on first start the old Mini Wallpaper configuration
+  directory is read.
+- `LICENSE` (MIT) and `CHANGELOG.md`.
 
-### Zmienione
+### Changed
 
-- Nazwa programu: Mini Wallpaper → CRAB (Custom Responsive Animated
+- Program name: Mini Wallpaper became CRAB (Custom Responsive Animated
   Backgrounds).
-- Katalog konfiguracji: `~/.config/mini-wallpaper` → `~/.config/crab`.
-- Ikona w obszarze powiadomień: „Otwórz Mini Wallpaper” → „Otwórz CRAB”.
-- Dokumentacja opisuje wymaganie sesji X11 i powód, dla którego Wayland
-  nie jest obsługiwany.
+- Configuration directory: `~/.config/mini-wallpaper` became `~/.config/crab`.
+- Notification area icon: "Open Mini Wallpaper" became "Open CRAB".
+- The documentation describes the X11 requirement and the reason why Wayland
+  is not supported.
 
-### Bez zmian
+### Unchanged
 
-Silnik tapety działa tak samo jak w Mini Wallpaper: okno typu
-`_NET_WM_WINDOW_TYPE_DESKTOP`, odtwarzanie przez mpv w gnieździe
-`GtkSocket`, dekodowanie programowe, pętla, filtr FPS, przezroczystość
-dla myszy (X Shape) oraz umieszczenie pod oknem ikon pulpitu.
+The wallpaper engine works exactly as in Mini Wallpaper: a
+`_NET_WM_WINDOW_TYPE_DESKTOP` window, playback through mpv in a `GtkSocket`,
+software decoding, looping, the FPS filter, mouse transparency (X Shape) and
+placement below the desktop icon window.
 
 ## [0.1.0] — 2026-09-28
 
-Pierwsza działająca wersja, wydana jako Mini Wallpaper.
+First working version, released as Mini Wallpaper.
 
-### Dodane
+### Added
 
-- Wybór pliku wideo (MP4, WebM, MKV, MOV, AVI).
-- Ustawianie wideo jako animowanej tapety pulpitu.
-- Przycisk „Zatrzymaj” przywracający statyczną tapetę systemu.
-- Suwak FPS (15–60) ograniczający liczbę renderowanych klatek.
-- Zapamiętywanie ostatniego pliku i liczby FPS.
-- Działanie w tle: zamknięcie okna nie zatrzymuje tapety, ikona w obszarze
-  powiadomień z menu odtwórz / wznów / zakończ.
-- Przezroczystość dla myszy i klawiatury oraz warstwa pod ikonami pulpitu.
-- Odtwarzanie w tle bez przejmowania wejścia od użytkownika.
+- Picking a video file (MP4, WebM, MKV, MOV, AVI).
+- Setting a video as an animated desktop wallpaper.
+- A "Stop" button that restores the static system wallpaper.
+- An FPS slider (15–60) limiting the number of rendered frames.
+- Remembering the last file and the FPS value.
+- Running in the background: closing the window does not stop the wallpaper,
+  and the notification area icon carries a play, resume and quit menu.
+- Mouse and keyboard transparency and a layer below the desktop icons.
+- Background playback that does not capture user input.
